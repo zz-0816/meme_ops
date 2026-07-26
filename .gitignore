@@ -1,0 +1,27 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local dependency environments
+backend/venv/
+.venv/
+venv/
+node_modules/
+
+# Runtime state and generated data
+data/*.db
+data/*.db-*
+*.sqlite
+*.sqlite3
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,249 @@
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+APP = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+STYLE = (ROOT / "frontend" / "style.css").read_text(encoding="utf-8")
+MAIN = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+DB = (ROOT / "backend" / "database.py").read_text(encoding="utf-8")
+
+
+class StaticProductRequirementsTests(unittest.TestCase):
+    def test_analysis_accepts_name_and_chain_hint(self):
+        self.assertIn("example: pepe sol", APP)
+        self.assertIn("chain_aliases", MAIN)
+
+    def test_poster_is_one_editable_block_with_mint(self):
+        for marker in ("analysis-poster", "removePosterBlock", "posterStyle_", "mintPoster", "Cyberpunk"):
+            self.assertIn(marker, APP)
+
+    def test_history_detail_accepts_id_and_creates_result_container(self):
+        self.assertIn("data.analysis_id ?? data.id", APP)
+        self.assertIn("ensureAnalysisResults", APP)
+
+    def test_watchlist_supports_drag_notes_and_batch_delete(self):
+        for marker in ("watchlistDragStart", "watchlistDrop", "startInlineEdit", "batchDeleteWatchlist"):
+            self.assertIn(marker, APP)
+        self.assertIn("/api/watchlist/reorder", APP)
+
+    def test_history_has_absolute_date_and_no_reanalyze_button(self):
+        self.assertIn("`${year}/${month}/${day}`", APP)
+        history_section = APP[APP.index("async function loadWatchlistHistory"):APP.index("async function batchDeleteWatchlist")]
+        self.assertNotIn("重新分析", history_section)
+
+    def test_history_matching_is_strict_by_token_and_chain(self):
+        self.assertIn("recordMatchesTokenChain", APP)
+        matcher = APP[APP.index("function recordMatchesTokenChain"):APP.index("async function loadWatchlistHistory")]
+        self.assertIn("recordName !== expectedName", matcher)
+        self.assertNotIn("unknown') return true", matcher)
+
+    def test_personas_are_all_available(self):
+        for persona in ("investor", "operator", "builder", "researcher"):
+            self.assertTrue((ROOT / "personas" / f"{persona}.md").exists())
+            self.assertIn(f'value="{persona}"', APP)
+
+    def test_community_is_global_discovery_feed(self):
+        timeline = DB[DB.index("def get_timeline"):DB.index("def get_user_posts")]
+        self.assertNotIn("user_follows", timeline)
+        self.assertIn("Explore", APP)
+
+    def test_follow_lists_require_owner_auth(self):
+        self.assertGreaterEqual(MAIN.count("Only the account owner can open this list"), 2)
+        self.assertRegex(MAIN, re.compile(r"api_followers\(address: str, user=Depends\(get_current_user\)\)"))
+        self.assertRegex(MAIN, re.compile(r"api_following\(address: str, user=Depends\(get_current_user\)\)"))
+
+    def test_profile_name_edit_and_wallet_read_only(self):
+        self.assertIn("renderProfileSettings", APP)
+        self.assertIn("#/settings", APP)
+        self.assertIn("/api/users/profile", APP)
+        self.assertNotIn("修改钱包", APP)
+
+    def test_routes_survive_refresh_and_external_profiles_are_separate(self):
+        for route in ("#/analysis", "#/community", "#/profile", "#/settings", "#/user/"):
+            self.assertIn(route, APP)
+        self.assertIn("routeFromHash", APP)
+        self.assertIn("switchTab('profile', false, null)", APP)
+
+    def test_twitter_style_social_actions_and_post_delete(self):
+        for marker in ("toggleLike", "repostPost", "submitQuote", "deleteOwnPost", "sharePost"):
+            self.assertIn(marker, APP)
+        self.assertIn("toggle_repost", DB)
+        self.assertIn("You cannot repost your own post", DB)
+        self.assertIn("quoted_post_id", DB)
+
+    def test_profile_has_no_private_label(self):
+        profile_section = APP[APP.index("async function renderProfile()"):APP.index("// ============ 辅助函数")]
+        self.assertNotIn("私密", profile_section)
+
+    def test_empty_history_has_no_start_analysis_button(self):
+        history_section = APP[APP.index("async function loadWatchlistHistory"):APP.index("async function batchDeleteWatchlist")]
+        self.assertNotIn("开始分析</button>", history_section)
+
+    def test_static_responsive_styles_exist(self):
+        self.assertIn("@media (max-width: 720px)", STYLE)
+
+    def test_report_auto_resizes_and_contract_links_to_dexscreener(self):
+        self.assertIn("resizeAnalysisFrame", APP)
+        self.assertIn("https://dexscreener.com/search?q=", APP)
+
+    def test_mint_metadata_uses_post_and_auth(self):
+        mint = APP[APP.index("async function mintPoster"):APP.index("function encodeMintData")]
+        self.assertIn("method: 'POST'", mint)
+        self.assertIn("headers: apiHeaders()", mint)
+
+    def test_analysis_controls_stay_in_shell(self):
+        self.assertIn("analysis-controls", APP)
+        self.assertIn("ensureAnalysisResults()", APP)
+        self.assertIn("position:sticky", STYLE)
+
+    def test_top_ten_market_board_and_click_to_analyze(self):
+        self.assertIn("/api/market/top-memes", APP)
+        self.assertIn("Top 10 Meme Assets", APP)
+        self.assertIn("analyzeTopMeme", APP)
+        self.assertIn('/api/market/top-memes', MAIN)
+
+    def test_watchlist_has_no_manual_add_control(self):
+        self.assertNotIn("addToWatchlistPrompt", APP)
+        self.assertNotIn("+ Add", APP)
+
+    def test_png_and_default_avatar_options(self):
+        self.assertIn('accept=".png,image/png"', APP)
+        self.assertIn("handleAvatarUpload", APP)
+        self.assertIn("selectDefaultAvatar", APP)
+        self.assertIn("emoji:", APP)
+
+    def test_visible_ui_is_english(self):
+        html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(">Home<", html)
+        self.assertNotIn(">我的<", html)
+        self.assertIn("Return the requested JSON in English", (ROOT / "backend" / "agent.py").read_text(encoding="utf-8"))
+
+    def test_x_style_community_features(self):
+        for marker in (
+            "For you", "Following", "handleComposerPaste", "handlePostImageFiles",
+            "toggleBookmark", "renderPostDetail", "submitReply", "view_count",
+        ):
+            self.assertIn(marker, APP + DB)
+        for marker in ("post_bookmarks", "post_views", "parent_post_id", "image_data"):
+            self.assertIn(marker, DB)
+
+    def test_nft_gallery_and_receipt_confirmation(self):
+        for marker in (
+            "waitForTransactionReceipt", "resolveMintedTokenId", "poster_image",
+            "nft-image-button", "Transaction ↗", "data-profile-section=\"nfts\"",
+        ):
+            self.assertIn(marker, APP)
+
+    def test_natural_language_analysis_intent(self):
+        agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
+        self.assertIn("_extract_request_intent", agent)
+        self.assertIn("style_instruction", agent)
+        self.assertIn("never alter, omit, or invent factual market metrics", agent)
+
+    def test_model_fallback_is_visible_and_image_providers_are_explicit(self):
+        provider = (ROOT / "backend" / "image_provider.py").read_text(encoding="utf-8")
+        self.assertIn("generation_mode", APP + (ROOT / "backend" / "agent.py").read_text(encoding="utf-8"))
+        for marker in ("OPENAI_IMAGE_MODEL", "GEMINI_IMAGE_MODEL", "STABILITY_IMAGE_MODEL"):
+            self.assertIn(marker, provider)
+        self.assertIn("PINATA_JWT", provider)
+
+    def test_community_uses_compact_plus_composer_and_views_are_static(self):
+        self.assertIn("compose-fab", APP)
+        self.assertIn("openPostComposer", APP)
+        self.assertNotIn("PNG · paste or drag · use @name to mention", APP)
+        self.assertIn("pointer-events:none", STYLE)
+
+    def test_dedicated_watchlist_market_page(self):
+        for marker in ("#/watchlist", "renderWatchlistPage", "/api/watchlist/market", "PRIVATE WATCHLIST"):
+            self.assertIn(marker, APP + MAIN)
+
+    def test_watchlist_page_has_no_analysis_form_and_keeps_sidebar(self):
+        section = APP[APP.index("async function renderWatchlistPage"):APP.index("function openWatchlistMarketHistory")]
+        switch_section = APP[APP.index("function switchTab"):APP.index("function switchSidebarTab")]
+        self.assertNotIn("renderAnalysisShell", section)
+        self.assertNotIn("analysisInput", section)
+        self.assertIn("tab === 'analysis' || tab === 'watchlist'", APP)
+        self.assertIn("renderSidebar();", switch_section)
+        self.assertIn("ensureWorkspaceResults", APP)
+
+    def test_watchlist_market_cache_is_invalidated_after_mutations(self):
+        self.assertIn("def _invalidate_watchlist_market", MAIN)
+        start = MAIN.index('@app.post("/api/watchlist")')
+        mutation_section = MAIN[start:MAIN.index("# ============ NFT API ============", start)]
+        self.assertGreaterEqual(mutation_section.count("_invalidate_watchlist_market(user)"), 5)
+
+    def test_report_style_is_a_separate_persisted_input(self):
+        models = (ROOT / "backend" / "models.py").read_text(encoding="utf-8")
+        agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
+        self.assertIn('id="reportStyleInput"', APP)
+        self.assertIn("report_style: Optional[str]", models)
+        self.assertIn("agent.analyze(req.prompt, req.report_style)", MAIN)
+        self.assertIn("infer_writing_profile(report_style)", agent)
+        self.assertIn("report_style", DB)
+
+    def test_image_provider_configuration_is_visible_in_poster_editor(self):
+        self.assertIn("loadPosterProviderStatus", APP)
+        self.assertIn("AI image renderer is not configured", APP)
+        self.assertIn("poster-provider-status", STYLE)
+
+    def test_comparison_is_separate_from_edit_delete_mode(self):
+        self.assertIn("toggleCompareMode", APP)
+        self.assertIn("openComparisonPersonaDialog", APP)
+        self.assertIn("Create comparison", APP)
+        self.assertNotIn("batchCompareWatchlist", APP)
+        action_start = APP.index("const actionBar = editMode")
+        action_end = APP.index("el.innerHTML = toolbar", action_start)
+        edit_branch = APP[action_start:action_end].split(": compareMode", 1)[0]
+        self.assertNotIn("Compare</button>", edit_branch)
+
+    def test_comparison_reports_have_private_api_and_dedicated_sidebar_history(self):
+        for marker in (
+            '@app.post("/api/comparisons")',
+            '@app.get("/api/comparisons")',
+            '@app.get("/api/comparisons/{comparison_id}")',
+            '@app.delete("/api/comparisons/{comparison_id}")',
+        ):
+            self.assertIn(marker, MAIN)
+        for marker in (
+            "COMPARISON REPORTS", "renderComparisonHistory",
+            "renderComparisonReport", "comparison-matrix",
+        ):
+            self.assertIn(marker, APP + STYLE)
+
+    def test_no_ipfs_onchain_metadata_has_warning_and_hard_limit(self):
+        provider = (ROOT / "backend" / "image_provider.py").read_text(encoding="utf-8")
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        for marker in (
+            "ONCHAIN_METADATA_WARNING_BYTES",
+            "ONCHAIN_METADATA_MAX_BYTES",
+        ):
+            self.assertIn(marker, provider + example)
+        self.assertIn("status_code=413", MAIN)
+        self.assertIn("eth_estimateGas", APP)
+        self.assertIn("Direct on-chain image metadata is much more expensive", APP)
+
+    def test_nft_gallery_supports_rename_category_and_hide(self):
+        for marker in ("editNFTDisplay", "filterNFTCategory", "hideNFTFromProfile"):
+            self.assertIn(marker, APP)
+        for marker in ("update_nft_display", "hide_nft_record"):
+            self.assertIn(marker, DB)
+
+    def test_watchlist_market_rows_open_full_history(self):
+        watchlist_page = APP[APP.index("async function renderWatchlistPage"):APP.index("function renderAnalysisShell")]
+        self.assertIn("openWatchlistMarketHistory", watchlist_page)
+        self.assertIn("History →", watchlist_page)
+        self.assertNotIn("analyzeWatchlistMarketItem", watchlist_page)
+
+    def test_report_style_keywords_and_poster_plan_are_persisted(self):
+        agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
+        planner = (ROOT / "backend" / "poster_planner.py").read_text(encoding="utf-8")
+        for marker in ("report_keywords", "writing_profile", "poster_facts", "poster_narrative"):
+            self.assertIn(marker, agent)
+        for marker in ("selected_fact_ids", "copy_density", "context_lines", "visual_keywords"):
+            self.assertIn(marker, planner)
+
+
+if __name__ == "__main__":
+    unittest.main()
