@@ -1,5 +1,14 @@
 # meme_ops
 
+## Live deployment
+
+- Application: https://memeops-production.up.railway.app/
+- API health: https://memeops-production.up.railway.app/api/health
+- API documentation: https://memeops-production.up.railway.app/docs
+
+The production service runs on Railway with a persistent Volume mounted at
+`/app/data`; SQLite is stored at `/app/data/meme_ops.db`.
+
 `meme_ops` 是一个面向 Meme 资产的 Web3 分析与社区应用。项目可以根据币种名称、链名称或合约地址获取市场数据，调用分析报告 Agent 生成不同用户视角的报告，并将报告进一步制作成可铸造的 Poster NFT。
 
 项目当前包含：
