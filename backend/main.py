@@ -8,6 +8,7 @@ import sys
 import time
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import (
     init_db, save_analysis, get_history, get_analysis_detail,
@@ -49,9 +51,18 @@ from models import (
 
 app = FastAPI(title="meme_ops API", version="0.2.0")
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,9 +95,21 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> str:
 
 # ============ 根路由 ============
 
-@app.get("/")
-async def root():
-    return {"service": "meme_ops", "version": "0.2.0", "status": "running"}
+@app.get("/api/health")
+async def health():
+    import database
+
+    conn = database.get_connection()
+    try:
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
+    return {
+        "service": "meme_ops",
+        "version": "0.2.0",
+        "status": "running",
+        "database": "ok",
+    }
 
 
 @app.get("/api/market/top-memes")
@@ -851,8 +874,22 @@ async def api_hide_nft(record_id: int, user=Depends(get_current_user)):
     }
 
 
+# ============ Production frontend ============
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+if FRONTEND_DIR.is_dir():
+    # Keep this mount after every /api route so the same Railway service can
+    # serve the browser app and API from one HTTPS origin.
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
+
 # ============ 启动入口 ============
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8788, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8788")),
+        reload=os.getenv("APP_ENV", "development").lower() != "production",
+    )

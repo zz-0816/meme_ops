@@ -23,6 +23,7 @@
 - [工作流程](#工作流程)
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
+- [Railway 部署](#railway-部署)
 - [环境变量配置](#环境变量配置)
 - [功能操作](#功能操作)
 - [部署 Poster NFT 合约](#部署-poster-nft-合约)
@@ -150,7 +151,7 @@ python backend/main.py
 
 - API：`http://localhost:8788`
 - Swagger 文档：`http://localhost:8788/docs`
-- 健康检查：`http://localhost:8788/`
+- 健康检查：`http://localhost:8788/api/health`
 
 后端第一次启动时会自动创建：
 
@@ -176,9 +177,92 @@ http://localhost:3000
 
 不要直接双击 `frontend/index.html` 以 `file://` 方式运行，否则浏览器的跨域、钱包和模块行为可能不一致。
 
+## Railway 部署
+
+仓库根目录已经提供：
+
+```text
+Dockerfile
+railway.json
+.dockerignore
+```
+
+生产容器由 FastAPI 同时提供前端静态页面和 `/api` 接口，因此公网环境只需要一个 Railway Service 和一个域名。
+
+### 1. 从 GitHub 创建 Service
+
+1. 登录 Railway。
+2. 创建 New Project。
+3. 选择 `Deploy from GitHub repo`。
+4. 选择 `zz-0816/meme_ops`。
+5. Railway 会自动识别根目录的 `Dockerfile`。
+
+### 2. 配置生产变量
+
+必须至少配置：
+
+```env
+APP_ENV=production
+JWT_SECRET=<strong-random-secret>
+DATABASE_PATH=/app/data/meme_ops.db
+
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-v4-pro
+
+NFT_CONTRACT_ADDRESS=
+NFT_CHAIN=monad-testnet
+NFT_CHAIN_ID=10143
+NFT_EXPLORER_URL=https://testnet.monadexplorer.com
+```
+
+根据需要继续配置图片 Provider 和 `PINATA_JWT`。不要把生产值写回 `.env.example` 或提交到 GitHub。
+
+### 3. 添加持久 Volume
+
+为 Web Service 添加 Volume，并设置：
+
+```text
+Mount Path: /app/data
+```
+
+当前 SQLite 文件会保存在：
+
+```text
+/app/data/meme_ops.db
+```
+
+如果没有挂载 Volume，Railway 重新部署或重启容器后，用户、帖子、Watchlist、报告和 NFT 展示记录可能丢失。
+
+SQLite + Volume 只适合单实例运行。不要为当前版本开启多个 Replica；正式扩容前应迁移到 PostgreSQL。
+
+### 4. 生成公网域名
+
+进入 Service 的 Networking，点击 `Generate Domain`。Railway 会提供 HTTPS 域名。
+
+验证：
+
+```text
+https://<your-domain>/api/health
+https://<your-domain>/
+https://<your-domain>/docs
+```
+
+前端在 `localhost:3000` 时会连接本地 `localhost:8788`；部署后会自动使用当前网页域名作为 API 地址，不需要手动修改 `frontend/app.js`。
+
 ## 环境变量配置
 
 完整示例位于 [.env.example](./.env.example)。
+
+### 运行环境
+
+| 变量 | 本地默认值 | Railway 建议值 | 说明 |
+|---|---|---|---|
+| `APP_ENV` | `development` | `production` | 控制开发热重载 |
+| `JWT_SECRET` | 空 | 强随机字符串 | 保持钱包登录会话在重启后仍可验证 |
+| `DATABASE_PATH` | `data/meme_ops.db` | `/app/data/meme_ops.db` | SQLite 文件位置 |
+| `CORS_ORIGINS` | 本地 3000 端口 | 可留默认或填写正式域名 | 逗号分隔的跨域来源 |
+| `PORT` | `8788` | Railway 自动注入 | Web Service 监听端口 |
 
 ### 分析报告模型
 
@@ -265,7 +349,7 @@ AI 栅格图片通常远大于默认 24 KB，因此正式使用 AI 图片时建�
 
 系统不会请求或保存钱包私钥、助记词。不同钱包的 Watchlist、历史报告、比较报告、收藏和个人资料相互隔离。
 
-当前开发版 JWT Secret 在后端启动时随机生成，因此重启后端后旧会话会失效，需要重新签名登录。
+未配置 `JWT_SECRET` 时，开发版会在后端启动时随机生成 Secret，因此重启后旧会话会失效。Railway 部署必须配置持久的强随机 `JWT_SECRET`。
 
 ### 生成分析报告
 
@@ -614,7 +698,7 @@ Compare 会对 2–5 个资产依次执行数据获取和完整报告生成，�
 
 ### 后端重启后需要重新连接钱包
 
-当前开发版 JWT Secret 在每次启动时随机生成，因此旧 Token 会失效。这是当前实现的预期行为。
+如果没有配置 `JWT_SECRET`，后端每次启动都会随机生成 Secret，因此旧 Token 会失效。生产环境配置持久的 `JWT_SECRET` 后不会因普通重启而失效。
 
 ### 前端无法连接后端
 
@@ -623,17 +707,17 @@ Compare 会对 2–5 个资产依次执行数据获取和完整报告生成，�
 - 后端运行在 `http://localhost:8788`
 - 前端运行在 `http://localhost:3000`
 - 没有直接用 `file://` 打开 HTML
-- 如果部署到其他域名，已经同步修改 `frontend/app.js` 中的 `API_BASE` 和后端 CORS
+- 生产环境使用同一 FastAPI 域名提供前端和 API；如果拆分前后端域名，需要设置 `CORS_ORIGINS`
 
 ## 安全与生产部署注意事项
 
 - 永远不要把 `.env`、私钥、助记词或生产数据库提交到 Git。
 - 本项目不需要服务器钱包私钥，链上交易必须由用户钱包确认。
 - 当前 SQLite 适合本地开发和单实例演示，不适合多实例生产部署。
-- 当前 JWT Secret 是进程内随机值，生产环境应改为安全的持久化 Secret。
+- 生产环境必须通过平台 Secret 配置持久的高强度 `JWT_SECRET`。
 - 生产环境应增加速率限制、验证码、输入文件病毒检测和严格 CSP。
 - PNG 图片以数据形式保存时会增加数据库体积，生产环境建议使用对象存储。
-- CORS 和前端 `API_BASE` 当前仅针对本地开发配置。
+- 单服务生产部署默认使用同源 API；拆分域名时必须收紧 `CORS_ORIGINS`。
 - 市场 API 可能限流或返回缺失字段，报告中的数据源和限制说明必须保留。
 - 智能合约一旦部署不可像普通后端代码一样直接修改，主网部署前需要审计和完整测试。
 

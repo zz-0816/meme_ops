@@ -8,9 +8,28 @@ APP = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
 STYLE = (ROOT / "frontend" / "style.css").read_text(encoding="utf-8")
 MAIN = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
 DB = (ROOT / "backend" / "database.py").read_text(encoding="utf-8")
+AUTH = (ROOT / "backend" / "auth.py").read_text(encoding="utf-8")
+ENV_EXAMPLE = (ROOT / ".env.example").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+RAILWAY = (ROOT / "railway.json").read_text(encoding="utf-8")
 
 
 class StaticProductRequirementsTests(unittest.TestCase):
+    def test_single_service_production_deployment_configuration(self):
+        self.assertIn("window.location.origin", APP)
+        self.assertIn('app.mount("/", StaticFiles', MAIN)
+        self.assertIn('@app.get("/api/health")', MAIN)
+        self.assertIn('os.getenv("PORT", "8788")', MAIN)
+        self.assertIn('"CORS_ORIGINS"', MAIN)
+
+    def test_production_session_and_sqlite_volume_are_configurable(self):
+        self.assertIn('os.getenv("JWT_SECRET")', AUTH)
+        self.assertIn('os.getenv("DATABASE_PATH"', DB)
+        self.assertIn("DATABASE_PATH=/app/data/meme_ops.db", DOCKERFILE)
+        self.assertIn('"healthcheckPath": "/api/health"', RAILWAY)
+        for variable in ("APP_ENV", "PORT", "JWT_SECRET", "DATABASE_PATH", "CORS_ORIGINS"):
+            self.assertIn(f"{variable}=", ENV_EXAMPLE)
+
     def test_analysis_accepts_name_and_chain_hint(self):
         self.assertIn("example: pepe sol", APP)
         self.assertIn("chain_aliases", MAIN)

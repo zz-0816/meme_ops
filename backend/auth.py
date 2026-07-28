@@ -9,17 +9,22 @@
 - 生产环境需加入人机验证（reCAPTCHA / turnstile）
 """
 
+import os
 import secrets
 import time
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import jwt, JWTError
+from config import load_project_env
+
+
+load_project_env()
 
 # 简单内存 nonce 存储（生产环境应使用 Redis）
 _nonce_store: dict[str, dict] = {}
 
 # JWT 配置
-JWT_SECRET = secrets.token_hex(32)  # 生产环境使用环境变量
+JWT_SECRET = os.getenv("JWT_SECRET") or secrets.token_hex(32)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 

@@ -9,8 +9,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-DB_DIR = Path(__file__).resolve().parent.parent / "data"
-DB_PATH = DB_DIR / "meme_ops.db"
+DEFAULT_DB_DIR = Path(__file__).resolve().parent.parent / "data"
+DB_PATH = Path(
+    os.getenv("DATABASE_PATH", str(DEFAULT_DB_DIR / "meme_ops.db"))
+).expanduser().resolve()
+DB_DIR = DB_PATH.parent
 FOLLOW_TABLE = "user_" + "follows"
 
 

@@ -7,7 +7,12 @@
  * - 生产环境需加入人机验证
  */
 
-const API_BASE = 'http://localhost:8788';
+const API_BASE = window.MEME_OPS_API_BASE || (
+    ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && window.location.port === '3000'
+        ? 'http://localhost:8788'
+        : window.location.origin
+);
 
 function apiHeaders(json = false) {
     const headers = {};
