@@ -916,3 +916,86 @@ def update_watchlist_note(item_id: int, notes: str, owner_address: str):
         conn.commit()
     finally:
         conn.close()
+
+
+# ============ Persona RAG memory ============
+
+def upsert_persona_rag_entry(
+    owner_address: str,
+    persona: str,
+    entry_type: str,
+    entry_key: str,
+    title: str,
+    content: str,
+    keywords: list[str] | None = None,
+) -> int:
+    """Save wallet-private report memory without changing the global persona prompt."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO persona_rag_entries
+               (owner_address, persona, entry_type, entry_key, title, content, keywords_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(owner_address, persona, entry_type, entry_key)
+               DO UPDATE SET title = excluded.title,
+                             content = excluded.content,
+                             keywords_json = excluded.keywords_json,
+                             updated_at = CURRENT_TIMESTAMP""",
+            (
+                owner_address, persona, entry_type, entry_key, title, content,
+                json.dumps(keywords or [], ensure_ascii=False),
+            ),
+        )
+        row = conn.execute(
+            """SELECT id FROM persona_rag_entries
+               WHERE owner_address = ? AND persona = ? AND entry_type = ? AND entry_key = ?""",
+            (owner_address, persona, entry_type, entry_key),
+        ).fetchone()
+        conn.commit()
+        return int(row["id"])
+    finally:
+        conn.close()
+
+
+def get_persona_rag_entries(
+    owner_address: str, persona: str, query: str = "", limit: int = 8,
+) -> list[dict]:
+    """Retrieve the most relevant private memory with a small local token-overlap ranker."""
+    conn = get_connection()
+    try:
+        rows = [
+            dict(row) for row in conn.execute(
+                """SELECT * FROM persona_rag_entries
+                   WHERE owner_address = ? AND persona = ?
+                   ORDER BY updated_at DESC LIMIT 80""",
+                (owner_address, persona),
+            ).fetchall()
+        ]
+        query_terms = {
+            term.lower() for term in str(query or "").replace("_", " ").split()
+            if len(term) > 2
+        }
+        for row in rows:
+            try:
+                row["keywords"] = json.loads(row.pop("keywords_json") or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                row["keywords"] = []
+            haystack = " ".join([
+                str(row.get("title") or ""),
+                str(row.get("content") or ""),
+                *[str(value) for value in row["keywords"]],
+            ]).lower()
+            row["_rank"] = sum(1 for term in query_terms if term in haystack)
+        rows.sort(key=lambda item: (item["_rank"], item.get("updated_at") or ""), reverse=True)
+        selected = rows[:max(1, min(limit, 20))]
+        if selected:
+            conn.executemany(
+                "UPDATE persona_rag_entries SET use_count = use_count + 1 WHERE id = ?",
+                [(item["id"],) for item in selected],
+            )
+            conn.commit()
+        for item in selected:
+            item.pop("_rank", None)
+        return selected
+    finally:
+        conn.close()

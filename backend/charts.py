@@ -74,7 +74,7 @@ def _setup():
 
 def _to_b64(fig):
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight", facecolor=BG)
+    fig.savefig(buf, format="png", dpi=180, bbox_inches="tight", facecolor=BG)
     buf.seek(0)
     b64 = base64.b64encode(buf.read()).decode()
     plt.close(fig)
@@ -338,7 +338,7 @@ def _builder_checkup(dims, name, overall):
         color = _safe_color(d["score"])
         status = "Healthy" if d["score"] >= 7 else "Warning" if d["score"] >= 4 else "Critical"
         ax.add_patch(plt.Circle((1.0, y), 0.4, color=color))
-        symbol = "\u2713" if d["score"] >= 4 else "\u2717"
+        symbol = "OK" if d["score"] >= 4 else "X"
         ax.text(1.0, y, symbol, ha="center", va="center", fontsize=10, color=BG, fontweight="bold")
         ax.text(1.8, y + 0.2, d["dimension"], fontsize=11, color=WHITE, fontweight="bold")
         ax.text(1.8, y - 0.3, f"Score: {d['score']:.1f}/10  [{status}]", fontsize=9, color=color)
@@ -487,6 +487,86 @@ _CHART_FNS = {
 }
 
 
+def build_report_html_v2(report: dict) -> str:
+    """Conclusion-first written report shared by every persona."""
+    token = report.get("token") or {}
+    persona_names = {
+        "operator": "Community Operator", "investor": "Investor",
+        "builder": "Project Builder", "researcher": "Researcher",
+    }
+    persona = persona_names.get(report.get("persona"), "Community Operator")
+    score = float(report.get("overall_score") or 0)
+    risk = str(report.get("risk_level") or "unknown")
+    conclusion = report.get("executive_conclusion") or report.get("recommendation") or ""
+
+    def esc(value):
+        return html.escape(str(value or ""))
+
+    inferences = "".join(
+        f"<li><b>{esc(item.get('inference'))}</b><span>{esc(item.get('evidence'))}"
+        f" · confidence: {esc(item.get('confidence') or 'unknown')}</span></li>"
+        for item in report.get("key_inferences") or []
+    )
+    modules = "".join(
+        f"<section><header><b>{esc(item.get('title'))}</b>"
+        f"<em>{esc(item.get('status') or 'analysis')}</em></header>"
+        f"<p>{esc(item.get('content'))}</p></section>"
+        for item in report.get("report_sections") or []
+    )
+    actions = "".join(
+        f"<div class='action'><strong>{esc(item.get('day'))}</strong><div>"
+        f"<b>{esc(item.get('theme'))}</b><ul>"
+        + "".join(f"<li>{esc(value)}</li>" for value in item.get("actions") or [])
+        + f"</ul><small>KPI: {esc(item.get('kpi'))}"
+        + (f" · Dependency: {esc(item.get('dependency'))}" if item.get("dependency") else "")
+        + "</small></div></div>"
+        for item in report.get("action_plan") or []
+    )
+    dimensions = "".join(
+        f"<section class='evidence'><header><b>{esc(item.get('dimension'))}</b>"
+        f"<em>{float(item.get('score') or 0):.1f}/10</em></header>"
+        + (f"<small>{esc(item.get('verified_evidence'))}</small>" if item.get("verified_evidence") else "")
+        + f"<p>{esc(item.get('detail') or item.get('notes'))}</p></section>"
+        for item in report.get("dimensions") or []
+    )
+    gaps = "".join(
+        f"<li><b>{esc(item.get('source'))}</b><span>{esc(item.get('status'))}: "
+        f"{esc(item.get('impact'))}</span></li>"
+        for item in report.get("data_gaps") or []
+    )
+    keywords = "".join(
+        f"<i>{esc(value)}</i>" for value in (report.get("report_keywords") or [])[:12]
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box}}body{{margin:0;padding:22px;background:#0d0d1a;color:#f5f5fa;
+font:14px/1.65 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+h1{{font-size:20px;margin:0}}h2{{font-size:13px;color:#a9a5c7;text-transform:uppercase;
+letter-spacing:.08em;margin:22px 0 8px}}.meta{{color:#8b8ba7;margin:2px 0 14px}}
+.verdict{{padding:18px;border:1px solid #6c63ff;background:#171733;border-radius:12px}}
+.verdict b{{display:block;color:#b9b5ff;margin-bottom:6px}}.verdict p{{margin:0;font-size:16px}}
+section{{background:#15152b;border:1px solid #272743;border-radius:10px;padding:13px;margin:9px 0}}
+section header{{display:flex;justify-content:space-between;gap:12px}}section em{{font-style:normal;
+font-size:11px;color:#9a96bb;text-transform:uppercase}}section p{{margin:6px 0 0;color:#d0cfdd}}
+ul{{padding-left:20px}}li span,section small,.action small{{display:block;color:#9693ad}}
+.action{{display:grid;grid-template-columns:70px 1fr;gap:12px;padding:12px 4px;
+border-bottom:1px solid #292944}}.action>strong{{color:#8f87ff}}.action ul{{margin:3px 0}}
+.tags{{display:flex;flex-wrap:wrap;gap:6px}}.tags i{{font-style:normal;background:#242442;
+color:#bbb7ff;border-radius:999px;padding:3px 8px;font-size:11px}}.evidence{{border-left:3px solid #6c63ff}}
+</style></head><body>
+<h1>{esc(token.get('name') or 'Meme')} {f"({esc(str(token.get('symbol')).upper())})" if token.get('symbol') else ""}</h1>
+<p class="meta">{esc(persona)} · score {score:.1f}/10 · signal level {esc(risk)}</p>
+<div class="verdict"><b>{esc(report.get('decision_label') or 'Executive Conclusion')}</b>
+<p>{esc(conclusion)}</p></div>
+{"<h2>Key Inferences</h2><ul>" + inferences + "</ul>" if inferences else ""}
+{modules}
+{"<h2>Action Plan</h2>" + actions if actions else ""}
+<h2>Supporting Evidence</h2>{dimensions}
+<div class="verdict"><b>Recommendation</b><p>{esc(report.get('recommendation'))}</p></div>
+{"<h2>Data Connections & Gaps</h2><ul>" + gaps + "</ul>" if gaps else ""}
+{"<h2>Report Keywords</h2><div class='tags'>" + keywords + "</div>" if keywords else ""}
+</body></html>"""
+
+
 def generate_all_charts(report: dict) -> dict:
     """
     返回 {
@@ -504,7 +584,7 @@ def generate_all_charts(report: dict) -> dict:
     recommendation = report.get("recommendation", "")
 
     result = {
-        "recommendation_html": build_recommendation_html(report),
+        "recommendation_html": build_report_html_v2(report),
     }
 
     fns = _CHART_FNS.get(persona, _CHART_FNS["investor"])
@@ -518,6 +598,13 @@ def generate_all_charts(report: dict) -> dict:
                 result[key] = fn(dims, name, overall)
             elif "risk" in fn.__name__ and "researcher" in fn.__name__:
                 result[key] = fn(dims, name, overall, risk)
+            elif fn.__name__ in (
+                "_operator_playbook",
+                "_investor_trend",
+                "_researcher_panorama",
+                "_researcher_matrix",
+            ):
+                result[key] = fn(dims, name)
             else:
                 result[key] = fn(dims, name, overall)
         except Exception as e:

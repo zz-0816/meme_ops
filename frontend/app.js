@@ -25,8 +25,8 @@ function apiHeaders(json = false) {
 let state = {
     token: localStorage.getItem('meme_ops_token') || null,
     address: localStorage.getItem('meme_ops_address') || null,
-    currentTab: 'community',
-    currentPersona: 'investor',
+    currentTab: 'overview',
+    currentPersona: localStorage.getItem('meme_ops_persona') || 'operator',
     sidebarTab: 'history',
     currentProfile: null, // 正在查看的用户地址 (null = 自己)
     profileSection: 'posts',
@@ -118,12 +118,12 @@ function logout() {
     document.getElementById('btnWallet').textContent = 'Connect Wallet';
     document.getElementById('btnWallet').classList.remove('connected');
     document.getElementById('walletAddr').style.display = 'none';
-    switchTab('analysis');
+    switchTab('overview');
 }
 
 // ============ Tab 切换 ============
 function routeFromHash() {
-    const route = location.hash || '#/analysis';
+    const route = location.hash || '#/overview';
     const postMatch = route.match(/^#\/post\/(\d+)$/);
     if (postMatch) {
         state.currentTab = 'community';
@@ -148,6 +148,8 @@ function routeFromHash() {
         return;
     }
     if (route.startsWith('#/community')) return switchTab('community', false);
+    if (route === '#/overview') return switchTab('overview', false);
+    if (route === '#/analysis') return switchTab('analysis', false);
     if (route === '#/watchlist') return switchTab('watchlist', false, 'analysis');
     const ownProfileMatch = route.match(/^#\/profile(?:\/(posts|nfts|bookmarks))?$/);
     if (ownProfileMatch) {
@@ -179,6 +181,7 @@ function switchTab(tab, updateHash = true, navTab = tab) {
     }
 
     switch (tab) {
+        case 'overview': renderOverview(); break;
         case 'community': renderCommunity(); break;
         case 'analysis': renderAnalysis(); break;
         case 'watchlist': renderWatchlistPage(); break;
@@ -298,7 +301,7 @@ function personaLabel(persona) {
         operator: 'Community Operator',
         builder: 'Project Builder',
         researcher: 'Researcher',
-    }[persona] || persona || 'Investor';
+    }[persona] || persona || 'Community Operator';
 }
 
 function openComparisonPersonaDialog() {
@@ -312,8 +315,8 @@ function openComparisonPersonaDialog() {
                 <p>All selected assets will be analyzed with the same perspective and compared dimension by dimension.</p>
                 <label>Perspective
                     <select id="comparisonPersona">
-                        <option value="investor">Investor</option>
                         <option value="operator">Community Operator</option>
+                        <option value="investor">Investor</option>
                         <option value="builder">Project Builder</option>
                         <option value="researcher">Researcher</option>
                     </select>
@@ -335,7 +338,7 @@ function closeComparisonPersonaDialog() {
 async function createComparisonReport() {
     const ids = [...selectedWatchlist];
     if (ids.length < 2 || ids.length > 5) return;
-    const persona = document.getElementById('comparisonPersona')?.value || 'investor';
+    const persona = document.getElementById('comparisonPersona')?.value || 'operator';
     const reportStyle = document.getElementById('comparisonStyle')?.value.trim()
         || 'Detailed horizontal comparison with evidence and limitations';
     closeComparisonPersonaDialog();
@@ -410,6 +413,7 @@ function renderComparisonReport(report, comparisonId, createdAt) {
                     <h2>${escapeHtml(report.title || 'Asset comparison')}</h2>
                     <p>${escapeHtml(personaLabel(report.persona))} perspective · ${formatDate(createdAt || report.generated_at)} · ${modelLabel}</p>
                 </div>
+                <button class="back-link" onclick="backToMarketDiscovery()">← Back to workspace</button>
             </header>
             <div class="comparison-winner">
                 <span>Highest score</span>
@@ -417,6 +421,7 @@ function renderComparisonReport(report, comparisonId, createdAt) {
                 <p>${escapeHtml(winner.reason || '')}</p>
             </div>
             <div class="comparison-summary">${escapeHtml(report.summary || '')}</div>
+            ${(report.next_actions || []).length ? `<section class="comparison-next-actions"><h3>Next actions</h3><ol>${report.next_actions.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ol></section>` : ''}
             <div class="comparison-matrix">
                 <div class="comparison-matrix-row comparison-matrix-head" style="grid-template-columns:${gridColumns}">
                     <span>Dimension</span>
@@ -579,6 +584,7 @@ async function loadWatchlistHistory(tokenName, chain, watchlistId = null) {
                     <h3>📋 ${tokenName} [${chain}]</h3>
                     <p style="color:var(--text-muted);padding:20px 0;">No analysis history for this asset.</p>
             </div>`;
+            el.insertAdjacentHTML('afterbegin', '<button class="back-link history-back" onclick="backFromHistory()">← Back</button>');
             return;
         }
         el.innerHTML = `
@@ -606,9 +612,16 @@ async function loadWatchlistHistory(tokenName, chain, watchlistId = null) {
                 </div>
             </div>
         `;
+        el.insertAdjacentHTML('afterbegin', '<button class="back-link history-back" onclick="backFromHistory()">← Back</button>');
     } catch(e) {
         el.innerHTML = '<div class="empty-state error-text">Unable to load history.</div>';
     }
+}
+
+function backFromHistory() {
+    currentHistoryContext = null;
+    if (state.currentTab === 'watchlist') renderWatchlistPage();
+    else backToMarketDiscovery();
 }
 
 async function batchDeleteWatchlist() {
@@ -1160,6 +1173,31 @@ function openImageViewer(src, title = 'Image') {
 }
 
 // ============ 分析 Tab ============
+function renderOverview() {
+    const el = document.getElementById('mainContent');
+    document.getElementById('sidebar').classList.remove('visible');
+    el.innerHTML = `
+        <section class="overview-hero">
+            <span class="eyebrow">OPS AGENT FOR MEME COMMUNITIES</span>
+            <h1>Turn meme signals into an operating plan.</h1>
+            <p>meme_ops separates four decision lenses. The default Community Operator
+            agent finds narrative opportunities, states what the data cannot prove, and
+            turns evidence into a seven-day community action plan.</p>
+            <div class="overview-actions">
+                ${state.token
+                    ? `<button class="btn btn-primary" onclick="switchTab('analysis')">Open private workspace</button>`
+                    : `<button class="btn btn-primary" onclick="connectWallet()">Connect wallet to analyze</button>`}
+                <button class="btn btn-secondary" onclick="switchTab('community')">Explore community</button>
+            </div>
+        </section>
+        <section class="overview-grid">
+            <article><span>01</span><h3>Conclusion first</h3><p>See the role-specific verdict before supporting data.</p></article>
+            <article><span>02</span><h3>Actionable operations</h3><p>Receive daily activities, dependencies, and measurable KPIs.</p></article>
+            <article><span>03</span><h3>Honest evidence</h3><p>Disconnected sources stay neutral and are never presented as zero.</p></article>
+            <article><span>04</span><h3>Private memory</h3><p>Your wallet keeps modules, report preferences, history, and watchlists private.</p></article>
+        </section>`;
+}
+
 async function renderAnalysis() {
     currentHistoryContext = null;
     renderAnalysisShell();
@@ -1217,24 +1255,24 @@ function renderAnalysisShell() {
         <div class="analysis-controls">
             <div class="persona-selector">
                 <span>Perspective</span>
-                <select id="personaSelect" onchange="state.currentPersona=this.value">
-                    <option value="investor">Investor</option>
+                <select id="personaSelect" onchange="state.currentPersona=this.value;localStorage.setItem('meme_ops_persona',this.value)">
                     <option value="operator">Community Operator</option>
+                    <option value="investor">Investor</option>
                     <option value="builder">Project Builder</option>
                     <option value="researcher">Researcher</option>
                 </select>
             </div>
             <div class="input-section">
                 <div class="input-group">
-                    <input id="analysisInput" placeholder="Meme name or name + chain (example: DOGE Solana)" onkeydown="if(event.key==='Enter')submitAnalysis()" />
-                    <button class="btn btn-primary" id="analysisBtn" onclick="submitAnalysis()">Analyze</button>
+                    <input id="analysisInput" ${state.token ? '' : 'disabled'} placeholder="${state.token ? 'Meme name or name + chain (example: DOGE Solana)' : 'Connect a wallet to unlock private analysis'}" onkeydown="if(event.key==='Enter')submitAnalysis()" />
+                    <button class="btn btn-primary" id="analysisBtn" onclick="${state.token ? 'submitAnalysis()' : 'connectWallet()'}">${state.token ? 'Analyze' : 'Connect wallet'}</button>
                 </div>
                 <label class="report-style-field" for="reportStyleInput">
                     <span>Report writing direction <small>optional</small></span>
-                    <textarea id="reportStyleInput" maxlength="500" placeholder="Example: friendly and concise for a beginner, or an academic market-microstructure report with methodology and limitations"></textarea>
+                    <textarea id="reportStyleInput" ${state.token ? '' : 'disabled'} maxlength="500" placeholder="Example: friendly and concise, or academic with methodology and limitations"></textarea>
                 </label>
             </div>
-            <p class="analysis-hint">Short form example: pepe sol. Asset identity and report writing style are handled separately. This field changes the report; Poster style below changes the NFT image only. Market facts remain source-grounded.</p>
+            <p class="analysis-hint">${state.token ? 'Short example: pepe sol. Click a Top 10 asset to analyze it from the selected perspective. Use + to add it to your comparison list.' : 'Rankings are public. Reports, learned modules, history, and comparisons unlock after wallet authentication.'}</p>
         </div>
         <div id="analysisResults"></div>
     `;
@@ -1274,9 +1312,10 @@ async function loadTopMemes() {
                     <span class="live-badge"><i></i> Updates every 60s</span>
                 </div>
                 <div class="market-table">
-                    <div class="market-row market-table-head"><span>#</span><span>Asset</span><span>Price</span><span>24h</span><span>Market Cap</span><span></span></div>
+                    <div class="market-row market-table-head top-market-row"><span></span><span>#</span><span>Asset</span><span>Price</span><span>24h</span><span>Market Cap</span><span></span></div>
                     ${items.map(item => `
-                        <button class="market-row" onclick="analyzeTopMeme('${String(item.name).replace(/'/g,"\\'")}','${String(item.chain).replace(/'/g,"\\'")}')">
+                        <button class="market-row top-market-row" onclick="analyzeTopMeme('${String(item.name).replace(/'/g,"\\'")}','${String(item.chain).replace(/'/g,"\\'")}')">
+                            <span class="market-add" role="button" tabindex="0" aria-label="Add ${escapeHtml(item.name)} to comparison" onclick="event.stopPropagation();addTopMemeToCompare('${String(item.name).replace(/'/g,"\\'")}','${String(item.symbol || '').replace(/'/g,"\\'")}','${String(item.chain).replace(/'/g,"\\'")}')">+</span>
                             <span class="market-rank">${item.rank}</span>
                             <span class="market-asset">${item.image ? `<img src="${item.image}" alt="">` : '<i>◇</i>'}<b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.symbol)} · ${escapeHtml(item.chain)}</small></span>
                             <span>${formatPrice(item.price)}</span>
@@ -1292,8 +1331,44 @@ async function loadTopMemes() {
 }
 
 function analyzeTopMeme(name, chain) {
+    if (!state.token) {
+        connectWallet();
+        return;
+    }
     document.getElementById('analysisInput').value = `${name} ${chain}`;
     submitAnalysis();
+}
+
+async function addTopMemeToCompare(name, symbol, chain) {
+    if (!state.token) {
+        await connectWallet();
+        return;
+    }
+    try {
+        const response = await fetch(`${API_BASE}/api/watchlist`, {
+            method: 'POST',
+            headers: apiHeaders(true),
+            body: JSON.stringify({token_name: name, token_symbol: symbol, chain}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Unable to add asset');
+        compareMode = true;
+        selectedWatchlist.add(Number(data.id));
+        await renderSidebar();
+        showToast(data.duplicate
+            ? `${name} is already tracked and selected for comparison.`
+            : `${name} added and selected for comparison.`);
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'app-toast';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2400);
 }
 
 function formatCompactUsd(value) {
@@ -1351,6 +1426,7 @@ function renderAnalysisResult(data) {
         ? `${escapeHtml(report.generation_model || 'DeepSeek')} analysis`
         : 'Rules-engine fallback';
     const generationClass = report.generation_mode === 'deepseek' ? 'model-live' : 'model-fallback';
+    document.querySelector('.analysis-controls')?.classList.add('results-mode');
 
     // ① 代币详情头部
     const icon = token.icon ? `<img src="${token.icon}" style="width:36px;height:36px;border-radius:50%;" onerror="this.style.display='none'">` : '🪙';
@@ -1387,7 +1463,7 @@ function renderAnalysisResult(data) {
         builder: ['Project Health', 'Competitive Gap', 'Roadmap'],
         researcher: ['Sector Overview', 'Comparison Matrix', 'Risk Assessment'],
     };
-    const labels = chartLabels[report.persona || 'investor'] || chartLabels.investor;
+    const labels = chartLabels[report.persona || 'operator'] || chartLabels.operator;
     const chartKeys = ['chart_1', 'chart_2', 'chart_3'];
     const chartImgs = chartKeys.some(k => charts[k])
         ? `<div class="poster-card" style="margin-bottom:16px;">
@@ -1416,14 +1492,34 @@ function renderAnalysisResult(data) {
             </div>
         </div>`;
     const card = `<section class="analysis-poster" data-analysis-id="${analysisId}">
-        <div class="poster-toolbar"><strong>Analysis Poster</strong><span>${formatDate(new Date().toISOString())}</span></div>
+        <div class="poster-toolbar"><button class="back-link" onclick="backToMarketDiscovery()">← Back to Top 10</button><strong>${escapeHtml(personaLabel(report.persona))} Report</strong><span>${formatDate(new Date().toISOString())}</span></div>
         <div class="editable-block">${tokenHeader}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove token details">×</button></div>
         ${recCard ? `<div class="editable-block">${recCard}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove written analysis">×</button></div>` : ''}
         ${chartImgs ? `<div class="editable-block">${chartImgs}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove charts">×</button></div>` : ''}
         ${styleEditor}
     </section>`;
-    container.insertAdjacentHTML('afterbegin', card);
+    const orderedCard = `<section class="analysis-poster" data-analysis-id="${analysisId}">
+        <div class="poster-toolbar"><button class="back-link" onclick="backToMarketDiscovery()">← Back to Top 10</button><strong>${escapeHtml(personaLabel(report.persona))} Report</strong><span>${formatDate(new Date().toISOString())}</span></div>
+        <div class="editable-block">${tokenHeader}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove token details">×</button></div>
+        ${chartImgs ? `<div class="editable-block chart-first">${chartImgs}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove charts">×</button></div>` : ''}
+        ${recCard ? `<div class="editable-block report-after-charts">${recCard}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove written analysis">×</button></div>` : ''}
+        ${styleEditor}
+    </section>`;
+    container.insertAdjacentHTML('afterbegin', orderedCard);
     loadPosterProviderStatus(analysisId);
+}
+
+function backToMarketDiscovery() {
+    if (currentHistoryContext) {
+        loadWatchlistHistory(
+            currentHistoryContext.tokenName,
+            currentHistoryContext.chain,
+            currentHistoryContext.watchlistId,
+        );
+        return;
+    }
+    renderAnalysisShell();
+    loadTopMemes();
 }
 
 async function loadPosterProviderStatus(analysisId) {

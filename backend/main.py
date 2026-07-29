@@ -49,7 +49,7 @@ from models import (
 
 # ============ App ============
 
-app = FastAPI(title="meme_ops API", version="0.2.0")
+app = FastAPI(title="meme_ops API", version="0.3.0")
 
 cors_origins = [
     origin.strip()
@@ -106,7 +106,7 @@ async def health():
         conn.close()
     return {
         "service": "meme_ops",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "running",
         "database": "ok",
     }
@@ -204,7 +204,7 @@ async def auth_me(user=Depends(get_current_user)):
 async def analyze(req: AnalyzeRequest, user=Depends(get_current_user)):
     """提交分析 — 拉取真实数据 + LLM 打分 + 生成海报图"""
     agent.set_persona(req.persona)
-    report = await agent.analyze(req.prompt, req.report_style)
+    report = await agent.analyze(req.prompt, req.report_style, owner_address=user)
     # 从 prompt 中提取链名（兜底保证 chain 正确）
     import re
     chain_aliases = {"sol": "solana", "solana": "solana", "eth": "ethereum", "ethereum": "ethereum",
@@ -250,7 +250,7 @@ async def create_comparison(
         raise HTTPException(status_code=400, detail="Duplicate watchlist assets are not allowed")
     persona = req.persona if req.persona in (
         "investor", "operator", "builder", "researcher",
-    ) else "investor"
+    ) else "operator"
     owned = {item["id"]: item for item in get_watchlist(user)}
     selected = [owned[item_id] for item_id in req.watchlist_ids if item_id in owned]
     if len(selected) != len(req.watchlist_ids):
@@ -259,7 +259,7 @@ async def create_comparison(
             detail="One or more selected assets do not belong to this wallet",
         )
     report = await build_comparison_report(
-        agent, selected, persona, req.report_style,
+        agent, selected, persona, req.report_style, owner_address=user,
     )
     comparison_id = save_comparison_report(
         owner_address=user,
@@ -404,8 +404,8 @@ async def reload_memory():
 async def list_personas():
     return {
         "personas": [
-            {"id": "investor", "name": "Investor"},
             {"id": "operator", "name": "Community Operator"},
+            {"id": "investor", "name": "Investor"},
             {"id": "builder", "name": "Project Builder"},
             {"id": "researcher", "name": "Researcher"},
         ],
@@ -415,7 +415,7 @@ async def list_personas():
 
 @app.post("/api/persona/switch")
 async def switch_persona(data: dict):
-    persona = data.get("persona", "investor")
+    persona = data.get("persona", "operator")
     agent.set_persona(persona)
     return {"current": persona}
 

@@ -60,6 +60,27 @@ CREATE TABLE IF NOT EXISTS metric_snapshots (
     FOREIGN KEY (analysis_id) REFERENCES analysis_records(id) ON DELETE CASCADE
 );
 
+-- Wallet-private memory for persona-specific report modules, style effects,
+-- and reusable keywords.  This is deliberately separate from shared prompts:
+-- one wallet can teach its Operator agent without changing another wallet.
+CREATE TABLE IF NOT EXISTS persona_rag_entries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_address   TEXT NOT NULL,
+    persona         TEXT NOT NULL,
+    entry_type      TEXT NOT NULL,
+    entry_key       TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    keywords_json   TEXT DEFAULT '[]',
+    use_count       INTEGER DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner_address, persona, entry_type, entry_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_persona_rag_lookup
+ON persona_rag_entries(owner_address, persona, entry_type, updated_at DESC);
+
 -- ============ 自选列表 ============
 
 CREATE TABLE IF NOT EXISTS watchlist (

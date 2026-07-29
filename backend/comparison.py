@@ -1,9 +1,10 @@
 """Sequential multi-asset comparison built on the analysis report agent."""
 
+import asyncio
 import json
 from datetime import datetime
 
-from agent import DEEPSEEK_API_KEY, DEEPSEEK_MODEL
+from agent import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, PERSONA_REPORT_CONFIG
 
 
 PERSONA_NAMES = {
@@ -95,6 +96,9 @@ def _deterministic_comparison(reports: list[dict], persona: str) -> dict:
         })
 
     winner = ranking[0]
+    focus = PERSONA_REPORT_CONFIG.get(
+        persona, PERSONA_REPORT_CONFIG["operator"],
+    )["comparison"]
     return {
         "title": comparison_title(reports),
         "persona": persona,
@@ -122,10 +126,10 @@ def _deterministic_comparison(reports: list[dict], persona: str) -> dict:
         },
         "summary": (
             f"{winner['name']} ranks first at {winner['overall_score']:.1f}/10. "
-            f"This horizontal comparison uses the same {PERSONA_NAMES.get(persona, persona)} "
-            f"weights for every asset; missing source fields remain limitations rather than "
-            f"being inferred."
+            f"Decision lens: {focus} Missing source fields remain limitations rather "
+            f"than being inferred."
         ),
+        "comparison_focus": focus,
         "generated_at": datetime.now().isoformat(),
         "generation_mode": "rules",
         "generation_model": None,
@@ -137,14 +141,26 @@ async def build_comparison_report(
     watchlist_items: list[dict],
     persona: str,
     report_style: str | None = None,
+    owner_address: str | None = None,
 ) -> dict:
     """Analyze selected assets sequentially, then synthesize one horizontal report."""
     report_agent.set_persona(persona)
-    reports = []
-    for item in watchlist_items:
+    semaphore = asyncio.Semaphore(3)
+
+    async def analyze_item(item):
         prompt = f"{item['token_name']} {item.get('chain') or ''}".strip()
-        report = await report_agent.analyze(prompt, report_style)
-        reports.append(report)
+        async with semaphore:
+            if owner_address:
+                return await report_agent.analyze(
+                    prompt, report_style, owner_address=owner_address,
+                )
+            return await report_agent.analyze(prompt, report_style)
+
+    # Selected assets are independent inputs. A small concurrency cap avoids the
+    # previous N× model latency while staying friendly to provider rate limits.
+    reports = await asyncio.gather(*(
+        analyze_item(item) for item in watchlist_items
+    ))
 
     comparison = _deterministic_comparison(reports, persona)
     if not DEEPSEEK_API_KEY:
@@ -172,6 +188,8 @@ async def build_comparison_report(
     prompt = f"""Create an evidence-grounded horizontal comparison from the same
 {PERSONA_NAMES.get(persona, persona)} perspective.
 Requested report style: {report_style or 'Detailed, clear, and comparative'}
+Persona-specific comparison focus:
+{PERSONA_REPORT_CONFIG.get(persona, PERSONA_REPORT_CONFIG['operator'])['comparison']}
 
 Asset reports:
 {json.dumps(compact_assets, ensure_ascii=False)}
@@ -185,7 +203,8 @@ Return JSON only:
   ],
   "dimension_insights": [
     {{"dimension":"exact dimension name","insight":"cross-asset interpretation"}}
-  ]
+  ],
+  "next_actions": ["2-5 persona-specific actions after the comparison"]
 }}
 Do not invent or change scores, token identities, chains, or market figures."""
     try:
@@ -229,6 +248,9 @@ Do not invent or change scores, token identities, chains, or market figures."""
         comparison["winner"]["reason"] = str(
             model_result.get("winner_reason") or comparison["winner"]["reason"]
         )
+        comparison["next_actions"] = [
+            str(value) for value in (model_result.get("next_actions") or [])[:5]
+        ]
         comparison["generation_mode"] = "deepseek"
         comparison["generation_model"] = DEEPSEEK_MODEL
     except Exception as error:

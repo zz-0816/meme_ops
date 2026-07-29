@@ -37,7 +37,7 @@ class UserProfile(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    persona: str = "investor"
+    persona: str = "operator"
     report_style: Optional[str] = Field(None, max_length=500)
     token_name: Optional[str] = None
     contract_addr: Optional[str] = None
@@ -51,7 +51,7 @@ class AnalyzeResponse(BaseModel):
 
 class ComparisonRequest(BaseModel):
     watchlist_ids: list[int] = Field(..., min_length=2, max_length=5)
-    persona: str = "investor"
+    persona: str = "operator"
     report_style: Optional[str] = Field(
         "Detailed horizontal comparison with evidence and limitations",
         max_length=500,

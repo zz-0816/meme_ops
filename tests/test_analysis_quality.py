@@ -18,6 +18,7 @@ from image_provider import (
     prepare_onchain_metadata,
 )
 from intent import infer_writing_profile
+from charts import generate_all_charts
 
 
 def raw_fixture():
@@ -162,6 +163,139 @@ class AnalysisQualityTests(unittest.TestCase):
         self.assertEqual(profiles["friendly"]["tone"], "friendly")
         self.assertEqual(profiles["compact_data"]["length"], "compact")
         self.assertEqual(profiles["comprehensive"]["length"], "extended")
+
+    def test_default_agent_is_ops_first(self):
+        agent = MemeOpsAgent()
+        self.assertEqual(agent.current_persona, "operator")
+
+    def test_operator_and_investor_have_exclusive_report_contracts(self):
+        intent = {
+            "writing_profile": infer_writing_profile("friendly and concise"),
+            "style_instruction": "friendly and concise",
+        }
+        self.agent.set_persona("operator")
+        operator = self.agent._fallback_analyze("Pepe solana", self.raw, intent)
+        self.agent.set_persona("investor")
+        investor = self.agent._fallback_analyze("Pepe solana", self.raw, intent)
+        self.assertTrue(operator["executive_conclusion"].startswith("Ops Verdict"))
+        self.assertTrue(investor["executive_conclusion"].startswith("Investment Verdict"))
+        self.assertEqual(len(operator["action_plan"]), 7)
+        self.assertNotEqual(
+            [item["dimension"] for item in operator["dimensions"]],
+            [item["dimension"] for item in investor["dimensions"]],
+        )
+        self.assertIn("community validation sprint", operator["recommendation"].lower())
+        self.assertNotIn("changing exposure", operator["recommendation"].lower())
+        operator_detail = " ".join(item["detail"] for item in operator["dimensions"])
+        self.assertNotIn("slippage", operator_detail.lower())
+        self.assertNotIn("position size", operator_detail.lower())
+
+    def test_missing_social_data_is_not_reported_as_zero(self):
+        raw = raw_fixture()
+        raw["coingecko"]["community_data"] = {
+            "twitter_followers": 0,
+            "reddit_subscribers": None,
+        }
+        self.agent.set_persona("operator")
+        summary = self.agent._build_data_summary(raw)
+        report = self.agent._fallback_analyze(
+            "Pepe solana", raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        self.assertIn("X followers: not connected", summary)
+        self.assertIn("Reddit subscribers: not connected", summary)
+        social = next(item for item in report["dimensions"] if item["key"] == "social_volume")
+        self.assertEqual(social["score"], 5.0)
+        self.assertIn("not connected", social["detail"].lower())
+        self.assertNotIn("0 x followers", social["detail"].lower())
+        self.assertEqual(report["data_gaps"][0]["status"], "not_connected")
+
+    def test_operator_model_cannot_label_community_when_social_is_disconnected(self):
+        raw = raw_fixture()
+        raw["coingecko"]["community_data"] = {}
+        self.agent.set_persona("operator")
+        core = self.agent._fallback_analyze(
+            "Pepe solana", raw,
+            {"writing_profile": infer_writing_profile("friendly concise")},
+        )
+        styled = {
+            "executive_conclusion": "This community is sleepy and weak.",
+            "report_sections": [{"title": "Community", "content": "Nobody is active."}],
+            "action_plan": [{"day": "Day 1", "actions": ["Map the conversation."]}],
+            "dimensions": [
+                {"key": item["key"], "detail": item["detail"]}
+                for item in core["dimensions"]
+            ],
+        }
+        enforced = self.agent._enforce_analysis_core(styled, core)
+        self.assertEqual(enforced["executive_conclusion"], core["executive_conclusion"])
+        self.assertEqual(enforced["report_sections"], core["report_sections"])
+        self.assertEqual(enforced["action_plan"], styled["action_plan"])
+        self.assertEqual(
+            enforced["model_executive_conclusion"],
+            "This community is sleepy and weak.",
+        )
+
+    def test_model_persona_content_is_preserved_separately_from_locked_core(self):
+        self.agent.set_persona("operator")
+        core = self.agent._fallback_analyze(
+            "Pepe solana", self.raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        styled = {
+            "recommendation": "Run a contributor sprint.",
+            "executive_conclusion": "Ops Verdict: validate one participation loop.",
+            "action_plan": [{"day": "Day 1", "actions": ["Map accounts"]}],
+            "dimensions": [
+                {"key": item["key"], "detail": "Operator-specific prose."}
+                for item in core["dimensions"]
+            ],
+        }
+        enforced = self.agent._enforce_analysis_core(styled, core)
+        self.assertEqual(enforced["persona_recommendation"], "Run a contributor sprint.")
+        self.assertEqual(enforced["executive_conclusion"], styled["executive_conclusion"])
+        self.assertEqual(enforced["action_plan"], styled["action_plan"])
+
+    def test_model_cannot_introduce_an_unverified_numeric_claim(self):
+        core = self.agent._fallback_analyze(
+            "Pepe solana", self.raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        styled = {
+            "dimensions": [
+                {
+                    "key": item["key"],
+                    "detail": (
+                        "Trades up to $50K have guaranteed low slippage."
+                        if item["key"] == "liquidity" else item["detail"]
+                    ),
+                }
+                for item in core["dimensions"]
+            ],
+        }
+        enforced = self.agent._enforce_analysis_core(styled, core)
+        liquidity = next(
+            item for item in enforced["dimensions"] if item["key"] == "liquidity"
+        )
+        self.assertEqual(
+            liquidity["detail"],
+            next(item for item in core["dimensions"] if item["key"] == "liquidity")["detail"],
+        )
+
+    def test_all_personas_generate_three_high_resolution_charts(self):
+        intent = {
+            "writing_profile": infer_writing_profile("friendly concise"),
+            "style_instruction": "friendly concise",
+        }
+        for persona in ("operator", "investor", "builder", "researcher"):
+            with self.subTest(persona=persona):
+                self.agent.set_persona(persona)
+                report = self.agent._fallback_analyze("Pepe solana", self.raw, intent)
+                charts = generate_all_charts(report)
+                for index in range(1, 4):
+                    value = charts[f"chart_{index}"]
+                    self.assertTrue(value.startswith("data:image/png;base64,"))
+                    self.assertGreater(len(value), 10_000)
 
     def test_comparison_titles_for_two_three_and_four_assets(self):
         two = [report_fixture("Pepe", 7), report_fixture("Doge", 6)]

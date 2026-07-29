@@ -2,6 +2,7 @@
 
 ## Live deployment
 
+- Current release: `v0.3.0`
 - Application: https://memeops-production.up.railway.app/
 - API health: https://memeops-production.up.railway.app/api/health
 - API documentation: https://memeops-production.up.railway.app/docs

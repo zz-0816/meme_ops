@@ -10,9 +10,10 @@
 
 <!-- 顶部导航 -->
 <nav class="topnav">
-    <span class="topnav-brand">🔍 meme_ops</span>
+    <button class="topnav-brand brand-button" onclick="switchTab('overview')" aria-label="Open meme_ops overview">meme_ops</button>
     <div class="topnav-tabs">
-        <button class="topnav-tab active" data-tab="community" onclick="switchTab('community')">Community</button>
+        <button class="topnav-tab active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+        <button class="topnav-tab" data-tab="community" onclick="switchTab('community')">Community</button>
         <button class="topnav-tab" data-tab="analysis" onclick="switchTab('analysis')">Analyze</button>
         <button class="topnav-tab" data-tab="profile" onclick="switchTab('profile')">Home</button>
     </div>

@@ -80,7 +80,7 @@ class StaticProductRequirementsTests(unittest.TestCase):
         self.assertNotIn("修改钱包", APP)
 
     def test_routes_survive_refresh_and_external_profiles_are_separate(self):
-        for route in ("#/analysis", "#/community", "#/profile", "#/settings", "#/user/"):
+        for route in ("#/overview", "#/analysis", "#/community", "#/profile", "#/settings", "#/user/"):
             self.assertIn(route, APP)
         self.assertIn("routeFromHash", APP)
         self.assertIn("switchTab('profile', false, null)", APP)
@@ -115,13 +115,40 @@ class StaticProductRequirementsTests(unittest.TestCase):
     def test_analysis_controls_stay_in_shell(self):
         self.assertIn("analysis-controls", APP)
         self.assertIn("ensureAnalysisResults()", APP)
-        self.assertIn("position:sticky", STYLE)
+        self.assertIn("analysis-controls.results-mode", STYLE)
+        self.assertIn("position:static", STYLE)
 
     def test_top_ten_market_board_and_click_to_analyze(self):
         self.assertIn("/api/market/top-memes", APP)
         self.assertIn("Top 10 Meme Assets", APP)
         self.assertIn("analyzeTopMeme", APP)
         self.assertIn('/api/market/top-memes', MAIN)
+
+    def test_ops_first_overview_wallet_gate_and_top_ten_compare_shortcut(self):
+        self.assertIn("currentPersona: localStorage.getItem('meme_ops_persona') || 'operator'", APP)
+        self.assertIn("function renderOverview", APP)
+        self.assertIn("Connect wallet to analyze", APP)
+        self.assertIn("addTopMemeToCompare", APP)
+        self.assertIn('class="market-add"', APP)
+        self.assertIn("Back to Top 10", APP)
+
+    def test_report_is_conclusion_first_and_charts_render_before_text(self):
+        charts = (ROOT / "backend" / "charts.py").read_text(encoding="utf-8")
+        self.assertIn("build_report_html_v2", charts)
+        self.assertIn("executive_conclusion", charts)
+        self.assertIn("Action Plan", charts)
+        self.assertIn("Supporting Evidence", charts)
+        self.assertIn("dpi=180", charts)
+        ordered = APP[APP.index("const orderedCard"):APP.index("container.insertAdjacentHTML('afterbegin', orderedCard)")]
+        self.assertLess(ordered.index("chartImgs"), ordered.index("recCard"))
+
+    def test_persona_rag_is_wallet_private(self):
+        schema = (ROOT / "sql" / "schema.sql").read_text(encoding="utf-8")
+        database = (ROOT / "backend" / "database.py").read_text(encoding="utf-8")
+        self.assertIn("persona_rag_entries", schema)
+        self.assertIn("owner_address", schema[schema.index("persona_rag_entries"):])
+        self.assertIn("get_persona_rag_entries", database)
+        self.assertIn("upsert_persona_rag_entry", database)
 
     def test_watchlist_has_no_manual_add_control(self):
         self.assertNotIn("addToWatchlistPrompt", APP)
@@ -198,7 +225,7 @@ class StaticProductRequirementsTests(unittest.TestCase):
         agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
         self.assertIn('id="reportStyleInput"', APP)
         self.assertIn("report_style: Optional[str]", models)
-        self.assertIn("agent.analyze(req.prompt, req.report_style)", MAIN)
+        self.assertIn("agent.analyze(req.prompt, req.report_style, owner_address=user)", MAIN)
         self.assertIn("infer_writing_profile(report_style)", agent)
         self.assertIn("report_style", DB)
 

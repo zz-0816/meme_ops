@@ -5,6 +5,8 @@ Agent 分析引擎 — 接入 DexScreener + CoinGecko + DeepSeek LLM
 import json
 import os
 import asyncio
+import re
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -14,6 +16,7 @@ from openai import AsyncOpenAI
 from config import load_project_env
 from intent import extract_analysis_intent, infer_writing_profile
 from asset_resolver import is_contract_address, requested_asset_terms, select_exact_pairs
+from database import get_persona_rag_entries, upsert_persona_rag_entry
 
 load_project_env()
 
@@ -37,10 +40,84 @@ PERSONA_WEIGHT_ADJUST = {
     "researcher": {},
 }
 
+PERSONA_REPORT_CONFIG = {
+    "operator": {
+        "name": "Community Operator",
+        "decision_label": "Ops Verdict",
+        "focus": (
+            "community quality, narrative momentum, content opportunities, audience "
+            "activation, campaign readiness, and whether the community merits operating effort"
+        ),
+        "sections": [
+            "Ops Verdict", "What Is Trending", "Community Evidence & Gaps",
+            "Recommended Activities", "7-Day Action Plan", "Success Metrics",
+        ],
+        "comparison": (
+            "Compare community signal coverage, social momentum, activation potential, "
+            "content opportunities, and campaign readiness. Market data is only a secondary proxy."
+        ),
+    },
+    "investor": {
+        "name": "Investor",
+        "decision_label": "Investment Verdict",
+        "focus": "liquidity, execution risk, holder structure, turnover, and risk/reward",
+        "sections": [
+            "Investment Verdict", "Market Evidence", "Risk & Reward",
+            "Invalidation Signals", "Monitoring Checklist",
+        ],
+        "comparison": "Compare liquidity, execution quality, market activity, concentration, and risk/reward.",
+    },
+    "builder": {
+        "name": "Project Builder",
+        "decision_label": "Build Priority",
+        "focus": "product health, structural gaps, user activation, competitive position, and delivery priorities",
+        "sections": [
+            "Build Priority", "Diagnosis", "Competitive Gaps",
+            "Improvement Backlog", "30-Day Delivery Plan",
+        ],
+        "comparison": "Compare structural health, product gaps, user activation, defensibility, and build priorities.",
+    },
+    "researcher": {
+        "name": "Researcher",
+        "decision_label": "Research Finding",
+        "focus": "methodology, evidence quality, sector context, uncertainty, and follow-up hypotheses",
+        "sections": [
+            "Research Finding", "Evidence & Method", "Sector Context",
+            "Limitations", "Follow-up Research",
+        ],
+        "comparison": "Compare evidence quality, sector context, methodological confidence, anomalies, and research gaps.",
+    },
+}
+
+PERSONA_DIMENSION_NAMES = {
+    "operator": {
+        "liquidity": "Campaign Reach Proxy",
+        "holder_count": "Audience Activity Proxy",
+        "holder_distribution": "Community Distribution Proxy",
+        "social_volume": "Community Signal Coverage",
+        "social_trending": "Narrative Momentum",
+    },
+    "builder": {
+        "liquidity": "Market Infrastructure",
+        "holder_count": "User Activation",
+        "holder_distribution": "Ecosystem Resilience",
+        "social_volume": "User Feedback Coverage",
+        "social_trending": "Product Momentum",
+    },
+    "researcher": {
+        "liquidity": "Market Depth Evidence",
+        "holder_count": "Activity Evidence",
+        "holder_distribution": "Distribution Evidence",
+        "social_volume": "Community Data Coverage",
+        "social_trending": "Attention Signal",
+    },
+}
+
 # DeepSeek 配置
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or ""
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "90"))
 
 
 def analysis_provider_status() -> dict:
@@ -48,6 +125,7 @@ def analysis_provider_status() -> dict:
         "provider": "deepseek" if DEEPSEEK_API_KEY else "rules",
         "configured": bool(DEEPSEEK_API_KEY),
         "model": DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None,
+        "timeout_seconds": DEEPSEEK_TIMEOUT_SECONDS,
     }
 
 
@@ -57,7 +135,7 @@ class MemeOpsAgent:
     def __init__(self):
         self.memory_prompt = ""
         self.persona_prompt = ""
-        self.current_persona = "investor"
+        self.current_persona = "operator"
         self.llm_client = None
         self.reload_memory()
 
@@ -68,7 +146,7 @@ class MemeOpsAgent:
 
     def set_persona(self, persona: str):
         if persona not in ("investor", "operator", "builder", "researcher"):
-            persona = "investor"
+            persona = "operator"
         self.current_persona = persona
         persona_path = PERSONAS_DIR / f"{persona}.md"
         self.persona_prompt = persona_path.read_text(encoding="utf-8") if persona_path.exists() else ""
@@ -80,12 +158,17 @@ class MemeOpsAgent:
             self.llm_client = AsyncOpenAI(
                 api_key=DEEPSEEK_API_KEY,
                 base_url=DEEPSEEK_BASE_URL,
+                timeout=DEEPSEEK_TIMEOUT_SECONDS,
+                max_retries=0,
             )
         return self.llm_client
 
     # ============ 分析主流程 ============
 
-    async def analyze(self, prompt: str, report_style: str | None = None) -> dict:
+    async def analyze(
+        self, prompt: str, report_style: str | None = None,
+        owner_address: str | None = None,
+    ) -> dict:
         if not self.memory_prompt:
             self.reload_memory()
         # 每次分析强制重读 persona 文件
@@ -95,6 +178,18 @@ class MemeOpsAgent:
         if report_style and report_style.strip():
             request_intent["style_instruction"] = report_style.strip()
             request_intent["writing_profile"] = infer_writing_profile(report_style)
+
+        rag_context = self._load_and_capture_rag(
+            owner_address, prompt, report_style, request_intent,
+        )
+        request_intent["rag_context"] = [
+            {
+                "type": item.get("entry_type"),
+                "title": item.get("title"),
+                "content": item.get("content"),
+            }
+            for item in rag_context
+        ]
 
         # 1. 拉取真实数据
         try:
@@ -127,6 +222,16 @@ class MemeOpsAgent:
             report["generation_model"] = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None
 
         report = self._enrich_report_content(report, raw_data, request_intent)
+        report["rag_context"] = {
+            "wallet_private": bool(owner_address),
+            "persona": self.current_persona,
+            "entries_used": len(rag_context),
+            "modules": [
+                item.get("title") for item in rag_context
+                if item.get("entry_type") == "module"
+            ],
+        }
+        self._remember_report_output(owner_address, report)
 
         report["data_sources"] = raw_data["_sources"]
         report["analyzed_at"] = datetime.now().isoformat()
@@ -145,6 +250,59 @@ class MemeOpsAgent:
         report["token"] = token
 
         return report
+
+    def _load_and_capture_rag(
+        self, owner_address: str | None, prompt: str,
+        report_style: str | None, intent: dict,
+    ) -> list[dict]:
+        """Capture explicitly requested modules and retrieve wallet-private persona memory."""
+        if not owner_address:
+            return []
+        combined = " ".join(value for value in (prompt, report_style or "") if value)
+        module_patterns = (
+            r"(?:add|include|create|new)\s+(?:an?\s+)?([a-z][a-z0-9 -]{2,48})\s+(?:section|module)",
+            r"(?:新增|添加|加入|包含)(.{2,24}?)(?:模块|章节|部分)",
+        )
+        for pattern in module_patterns:
+            for match in re.finditer(pattern, combined, re.IGNORECASE):
+                title = re.sub(r"\s+", " ", match.group(1)).strip(" :，。")
+                if not title:
+                    continue
+                entry_key = hashlib.sha1(title.lower().encode("utf-8")).hexdigest()[:16]
+                upsert_persona_rag_entry(
+                    owner_address, self.current_persona, "module", entry_key,
+                    title[:64],
+                    (
+                        f"Include a distinct '{title[:64]}' report module when relevant. "
+                        "Keep it evidence-grounded and label unavailable inputs explicitly."
+                    ),
+                    [title, self.current_persona],
+                )
+        if report_style and report_style.strip():
+            style = report_style.strip()[:500]
+            entry_key = hashlib.sha1(style.lower().encode("utf-8")).hexdigest()[:16]
+            upsert_persona_rag_entry(
+                owner_address, self.current_persona, "effect", entry_key,
+                "Preferred report effect", style,
+                list((intent.get("writing_profile") or {}).values()),
+            )
+        return get_persona_rag_entries(
+            owner_address, self.current_persona, combined, limit=8,
+        )
+
+    def _remember_report_output(
+        self, owner_address: str | None, report: dict,
+    ) -> None:
+        if not owner_address:
+            return
+        keywords = [str(value)[:80] for value in report.get("report_keywords") or [] if value]
+        if not keywords:
+            return
+        entry_key = hashlib.sha1("|".join(sorted(keywords)).encode("utf-8")).hexdigest()[:16]
+        upsert_persona_rag_entry(
+            owner_address, self.current_persona, "keywords", entry_key,
+            "Reusable report keywords", ", ".join(keywords[:12]), keywords[:12],
+        )
 
     # ============ 数据拉取 ============
 
@@ -298,15 +456,40 @@ class MemeOpsAgent:
             })
 
         # 加载完整 persona prompt（不截断）
-        persona_instructions = self.persona_prompt if self.persona_prompt else "Default investor perspective"
+        persona_instructions = (
+            self.persona_prompt
+            if self.persona_prompt
+            else "Default Community Operator perspective"
+        )
+        persona_config = PERSONA_REPORT_CONFIG[self.current_persona]
+        rag_context = intent.get("rag_context") or []
+        rag_instructions = "\n".join(
+            f"- {item.get('title')}: {item.get('content')}"
+            for item in rag_context
+        ) or "- No wallet-specific modules have been learned yet."
 
-        system_prompt = f"""You are a Web3 Meme intelligence analyst. Follow the Persona definition below,
-but write every user-facing string, dimension, conclusion, label, and recommendation in English.
+        system_prompt = f"""You are the report agent inside an Ops-first Web3 Meme product.
+Follow exactly one Persona definition below; never blend it with another persona.
+Write every user-facing string, dimension, conclusion, label, and recommendation in English.
 
 ╔══════════════════════════════════════════════════════════╗
 ║  PERSONA DEFINITION (follow this perspective)             ║
 ╚══════════════════════════════════════════════════════════╝
 {persona_instructions}
+
+Exclusive report contract for {persona_config['name']}:
+- Primary focus: {persona_config['focus']}
+- Lead with the conclusion labelled "{persona_config['decision_label']}", then inference,
+  actions, and only then supporting evidence.
+- Required modules: {json.dumps(persona_config['sections'], ensure_ascii=False)}
+- Community Operator reports prioritize operations and may omit price/liquidity prose
+  unless explicitly useful as a weak activity proxy. They always include a 7-day plan.
+- Never report a missing social value as zero. Say "not connected" or "not available",
+  use neutral wording, and do not infer follower or subscriber counts.
+- Distinguish verified facts, directional proxies, inferences, and unavailable data.
+
+Wallet-private persona RAG context (preferences only, never factual evidence):
+{rag_instructions}
 
 ══════════════════════════════════════════════════
 Scoring dimensions (return every dimension in JSON, scored 0-10):
@@ -325,6 +508,19 @@ Return JSON only, without a Markdown code fence:
   "overall_score": 7.5,
   "risk_level": "green",
   "health_indicators": {{"positive":["Strength"],"negative":["Risk"],"neutral":["Watch item"]}},
+  "executive_conclusion": "Conclusion-first verdict for this exact Persona",
+  "key_inferences": [
+    {{"inference":"Useful further conclusion","evidence":"Source-backed evidence","confidence":"high|medium|low"}}
+  ],
+  "report_sections": [
+    {{"title":"Persona-specific module","content":"Useful prose","status":"verified|proxy|not_connected"}}
+  ],
+  "action_plan": [
+    {{"day":"Day 1","theme":"Concrete theme","actions":["Specific action"],"kpi":"Measurable KPI","dependency":"Needed channel or data"}}
+  ],
+  "data_gaps": [
+    {{"source":"X community metrics","status":"not_connected","impact":"What cannot be concluded"}}
+  ],
   "recommendation": "A concise English recommendation reflecting the selected Persona",
   "analysis_summary": "A summary visibly following the requested writing style",
   "report_keywords": ["5-10 evidence-based analytical keywords"],
@@ -359,39 +555,48 @@ Perspective requirements:
                 }
                 for item in fixed_core.get("dimensions", [])
             ],
-            "recommendation_stance": fixed_core.get("recommendation"),
         }
         user_prompt = f"""Analyze this asset: "{intent.get('token_query')}"
 Requested chain: {intent.get('chain') or 'not specified'}
 Original user request: "{prompt}"
 Requested writing style: "{style_instruction}"
 
-Fixed analysis core (binding; style must not change scores, risk, or recommendation stance):
+Fixed quantitative core (binding; style must not change scores or risk):
 {json.dumps(fixed_core_payload, ensure_ascii=False)}
 
 Data:
 {data_summary}
 
-Return the requested JSON in English. Adapt tone, clarity, and level of detail to the
-requested writing style, but never alter, omit, or invent factual market metrics."""
+Return the requested JSON in English. Make the chosen Persona visibly distinct in
+conclusion, modules, inferences, and actions. Adapt tone, clarity, and level of detail
+to the requested writing style, but never alter, omit, or invent factual market metrics."""
 
         llm = self._get_llm()
         try:
             profile = intent.get("writing_profile") or {}
-            max_tokens = 8192 if profile.get("length") == "extended" else 4096
+            max_tokens = 6500 if profile.get("length") == "extended" else 4096
             last_error = None
+            previous_content = None
             for attempt in range(2):
-                retry_note = (
-                    "\nThe previous response was invalid JSON. Return a complete, shorter JSON "
-                    "object with all required fields and no unescaped line breaks in strings."
-                    if attempt else ""
-                )
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+                if previous_content:
+                    messages.extend([
+                        {"role": "assistant", "content": previous_content[:12000]},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Repair the previous response into complete valid JSON. "
+                                "Keep all source facts and locked scores unchanged. Use shorter "
+                                "strings if needed. Return JSON only."
+                            ),
+                        },
+                    ])
                 resp = await llm.chat.completions.create(
                     model=DEEPSEEK_MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt + retry_note},
-                    ],
+                    messages=messages,
                     temperature=0.3 if attempt == 0 else 0.1,
                     max_tokens=max_tokens,
                     response_format={"type": "json_object"},
@@ -407,6 +612,7 @@ requested writing style, but never alter, omit, or invent factual market metrics
                     return report
                 except json.JSONDecodeError as error:
                     last_error = error
+                    previous_content = content
             raise last_error or RuntimeError("Model returned invalid JSON")
             """
             # 提取 JSON（LLM 可能在 JSON 外包裹 markdown 代码块）
@@ -427,6 +633,21 @@ requested writing style, but never alter, omit, or invent factual market metrics
         self, styled_report: dict, analysis_core: dict,
     ) -> dict:
         """Keep quantitative conclusions invariant while preserving styled prose."""
+        def safe_styled_detail(styled: dict, core: dict) -> str:
+            candidate = str(styled.get("detail") or styled.get("notes") or "")
+            fallback = str(core.get("detail") or "")
+            if not candidate:
+                return fallback
+            # Reject model prose that introduces a numeric claim absent from the
+            # source-derived core. This catches invented thresholds/position sizes
+            # while still allowing non-numeric persona and tone changes.
+            number_pattern = r"(?<![A-Za-z])[$#]?\d[\d,.]*(?:\.\d+)?%?[KMB]?"
+            candidate_numbers = set(re.findall(number_pattern, candidate, re.IGNORECASE))
+            fallback_numbers = set(re.findall(number_pattern, fallback, re.IGNORECASE))
+            if candidate_numbers - fallback_numbers:
+                return fallback
+            return candidate
+
         styled_dimensions = {
             str(item.get("key") or item.get("dimension") or ""): item
             for item in styled_report.get("dimensions") or []
@@ -441,19 +662,51 @@ requested writing style, but never alter, omit, or invent factual market metrics
             styled = styled_dimensions.get(key) or {}
             dimensions.append({
                 **core_dimension,
-                "detail": (
-                    styled.get("detail")
-                    or styled.get("notes")
-                    or core_dimension.get("detail")
-                    or ""
-                ),
+                "detail": safe_styled_detail(styled, core_dimension),
             })
         styled_report["dimensions"] = dimensions
         styled_report["overall_score"] = analysis_core.get("overall_score")
         styled_report["risk_level"] = analysis_core.get("risk_level")
-        styled_report["model_recommendation"] = styled_report.get("recommendation")
+        # Scores and source-derived facts are immutable. Persona prose is not:
+        # preserving it is what makes Operator, Investor, Builder, and Researcher
+        # reports observably different.
+        styled_report["persona_recommendation"] = styled_report.get("recommendation")
         styled_report["recommendation"] = analysis_core.get("recommendation")
-        styled_report["health_indicators"] = analysis_core.get("health_indicators")
+        styled_report["health_indicators"] = (
+            styled_report.get("health_indicators")
+            or analysis_core.get("health_indicators")
+        )
+        for field in (
+            "executive_conclusion", "key_inferences", "report_sections",
+            "action_plan", "data_gaps",
+        ):
+            if not styled_report.get(field):
+                styled_report[field] = analysis_core.get(field)
+        styled_report["decision_label"] = (
+            styled_report.get("decision_label")
+            or analysis_core.get("decision_label")
+        )
+        social_gap = any(
+            str(item.get("status") or "").lower() == "not_connected"
+            and any(
+                marker in str(item.get("source") or "").lower()
+                for marker in ("x", "reddit", "social", "community", "telegram", "discord")
+            )
+            for item in analysis_core.get("data_gaps") or []
+        )
+        if self.current_persona == "operator" and social_gap:
+            # Without community telemetry the model may be tempted to call the
+            # community "quiet", "weak", or "strong" from market proxies. Keep
+            # the source-derived neutral verdict/sections while retaining its
+            # stylistic action plan.
+            styled_report["model_executive_conclusion"] = styled_report.get(
+                "executive_conclusion"
+            )
+            for field in (
+                "executive_conclusion", "key_inferences",
+                "report_sections", "data_gaps",
+            ):
+                styled_report[field] = analysis_core.get(field)
         styled_report["analysis_core"] = {
             "locked": True,
             "overall_score": analysis_core.get("overall_score"),
@@ -462,7 +715,6 @@ requested writing style, but never alter, omit, or invent factual market metrics
                 str(item.get("key")): item.get("score")
                 for item in analysis_core.get("dimensions") or []
             },
-            "recommendation_stance": analysis_core.get("recommendation"),
         }
         return styled_report
 
@@ -580,6 +832,15 @@ requested writing style, but never alter, omit, or invent factual market metrics
             except (TypeError, ValueError):
                 return 0.0
 
+        def connected_metric(value, formatter="{:,.0f}"):
+            """Zero/None from social providers means unavailable, not a verified zero."""
+            if value in (None, "", 0, 0.0, "0"):
+                return "not connected"
+            try:
+                return formatter.format(float(value))
+            except (TypeError, ValueError):
+                return str(value)
+
         # DexScreener
         ds = raw_data.get("dexscreener", {})
         pairs = ds.get("pairs", [])
@@ -645,9 +906,13 @@ requested writing style, but never alter, omit, or invent factual market metrics
             parts.append(f"- Circulating supply: {metric_number(market.get('circulating_supply')):,.0f}")
             parts.append(f"- Total supply: {market.get('total_supply','?')}")
             parts.append(f"- All-time high: ${metric_number(market.get('ath',{}).get('usd')):.8f}")
-            parts.append(f"- X followers: {metric_number(community.get('twitter_followers')):,.0f}")
-            parts.append(f"- Reddit subscribers: {metric_number(community.get('reddit_subscribers')):,.0f}")
-            parts.append(f"- Telegram: {community.get('telegram_channel_user_count','?')}")
+            parts.append(f"- X followers: {connected_metric(community.get('twitter_followers'))}")
+            parts.append(f"- Reddit subscribers: {connected_metric(community.get('reddit_subscribers'))}")
+            parts.append(f"- Telegram members: {connected_metric(community.get('telegram_channel_user_count'))}")
+            parts.append(
+                "- Missing social metrics are unavailable inputs. Do not interpret them "
+                "as zero audience, zero discussion, or a weak community."
+            )
             desc = cg.get("description", {}).get("en", "")
             if desc:
                 parts.append(f"- Description: {desc[:300]}...")
@@ -694,7 +959,12 @@ requested writing style, but never alter, omit, or invent factual market metrics
         total_volume_24h = sum(_safe_num(p.get("volume", {}).get("h24")) for p in pairs)
         total_txns_24h = sum(_safe_num(p.get("txns", {}).get("h24")) for p in pairs)
         pair_count = len(pairs)
-        twitter_followers = (cg.get("community_data", {}).get("twitter_followers", 0) or 0) if cg else 0
+        community_data = cg.get("community_data", {}) if cg else {}
+        twitter_raw = community_data.get("twitter_followers")
+        reddit_raw = community_data.get("reddit_subscribers")
+        twitter_followers = twitter_raw if isinstance(twitter_raw, (int, float)) and twitter_raw > 0 else None
+        reddit_subscribers = reddit_raw if isinstance(reddit_raw, (int, float)) and reddit_raw > 0 else None
+        social_connected = twitter_followers is not None or reddit_subscribers is not None
         market_cap = (cg.get("market_data", {}).get("market_cap", {}).get("usd", 0) or 0) if cg else 0
 
         # 详细打分
@@ -702,7 +972,11 @@ requested writing style, but never alter, omit, or invent factual market metrics
         holder_est = total_txns_24h * 2 if total_txns_24h > 0 else 0
         holder_score = min(10, round((holder_est / 100) ** 0.5 * 3, 1)) if holder_est > 0 else 0
         dist_score = 5.0 if pairs else 0
-        social_score = min(10, round((twitter_followers / 1000) ** 0.4 * 3, 1)) if twitter_followers > 0 else 0
+        # Missing coverage must not penalize the asset as if it had a verified zero audience.
+        social_score = (
+            min(10, round((twitter_followers / 1000) ** 0.4 * 3, 1))
+            if twitter_followers is not None else 5.0
+        )
         trend_score = min(10, round(total_volume_24h / 1_000_000 * 2, 1)) if total_volume_24h > 0 else 0
 
         scores = {"liquidity": liq_score, "holder_count": holder_score, "holder_distribution": dist_score,
@@ -725,8 +999,14 @@ requested writing style, but never alter, omit, or invent factual market metrics
                 f"Full holder distribution requires a chain explorer data source."
             ),
             "social_volume": (
-                f"The project has approximately {twitter_followers:,} X followers. "
-                f"{'Community reach and discussion are strong.' if social_score >= 7 else 'Community reach is moderate.' if social_score >= 4 else 'Community reach and discussion are limited.'}"
+                (
+                    f"The connected source reports approximately {twitter_followers:,.0f} X followers. "
+                    f"{'Community reach appears strong.' if social_score >= 7 else 'Community reach appears moderate.'}"
+                )
+                if social_connected else
+                "X and Reddit community metrics are not connected in the current source. "
+                "No audience-size or discussion-quality conclusion is made; on-chain activity "
+                "is shown only as a directional proxy, not as a substitute."
             ),
             "social_trending": (
                 f"24h volume is ${total_volume_24h:,.0f} against a ${market_cap:,.0f} market cap. "
@@ -770,8 +1050,12 @@ requested writing style, but never alter, omit, or invent factual market metrics
                     f"{pair_count} active pairs make venue exposure {venue_signal}; holder concentration is unverified."
                 ),
                 "social_volume": (
-                    f"{twitter_followers:,.0f} X followers indicate "
-                    f"{'strong' if social_score >= 7 else 'moderate' if social_score >= 4 else 'limited'} reach."
+                    (
+                        f"{twitter_followers:,.0f} connected X followers indicate "
+                        f"{'strong' if social_score >= 7 else 'moderate'} potential reach."
+                    )
+                    if social_connected else
+                    "X/Reddit metrics are not connected; community reach is not scored as zero."
                 ),
                 "social_trending": (
                     f"${total_volume_24h:,.0f} 24h volume versus ${market_cap:,.0f} market cap indicates "
@@ -803,12 +1087,18 @@ requested writing style, but never alter, omit, or invent factual market metrics
                     f"or unlock analysis."
                 ),
                 "social_volume": (
-                    f"The available community source reports approximately {twitter_followers:,.0f} X "
-                    f"followers, corresponding to a "
-                    f"{'strong' if social_score >= 7 else 'moderate' if social_score >= 4 else 'limited'} reach signal. "
-                    f"Follower count measures potential distribution rather than active discussion quality. "
-                    f"Engagement rate, account quality, sentiment dispersion, and campaign-adjusted growth "
-                    f"are not available in the current source set."
+                    (
+                        f"The connected community source reports approximately {twitter_followers:,.0f} X "
+                        f"followers, corresponding to a "
+                        f"{'strong' if social_score >= 7 else 'moderate'} potential-reach signal. "
+                        "Follower count does not establish discussion quality. Engagement rate, account "
+                        "quality, sentiment dispersion, and campaign-adjusted growth remain unavailable."
+                    )
+                    if social_connected else
+                    "X and Reddit community endpoints are not connected in the current source set. "
+                    "The report therefore makes no audience-size, engagement-quality, or sentiment claim. "
+                    "Any transaction activity used elsewhere is explicitly a directional proxy and not "
+                    "a replacement for community telemetry."
                 ),
                 "social_trending": (
                     f"Trailing 24h volume is ${total_volume_24h:,.0f} against a reported market cap of "
@@ -819,12 +1109,76 @@ requested writing style, but never alter, omit, or invent factual market metrics
                 ),
             }
 
+        if self.current_persona == "operator":
+            social_detail = (
+                f"The connected source reports approximately {twitter_followers:,.0f} X "
+                "followers. Treat reach as distribution capacity only; engagement quality, "
+                "active contributors, retention, and content conversion still require direct telemetry."
+                if social_connected else
+                "X and Reddit community metrics are not connected. No audience-size, engagement, "
+                "sentiment, or community-quality claim is made, and the missing values are not zero."
+            )
+            if is_compact:
+                details = {
+                    "liquidity": (
+                        f"{pair_count} active venues indicate the asset is operationally accessible; "
+                        "this is a campaign-continuity proxy, not a community-quality score."
+                    ),
+                    "holder_count": (
+                        f"{total_txns_24h:,.0f} 24h transactions show possible audience attention, "
+                        "but do not identify unique or retained community members."
+                    ),
+                    "holder_distribution": (
+                        f"Activity spans {pair_count} pairs; community distribution across X, Reddit, "
+                        "Telegram, and Discord is not connected."
+                    ),
+                    "social_volume": social_detail,
+                    "social_trending": (
+                        f"${total_volume_24h:,.0f} in 24h DEX volume is a directional attention proxy. "
+                        "It cannot identify the trending narrative or prove organic conversation."
+                    ),
+                }
+            else:
+                methodology = (
+                    "For community operations, this construct has low validity as a direct measure "
+                    "of participation and must not be used to infer audience quality. "
+                    if is_detailed else
+                    "This does not establish community quality. "
+                )
+                details = {
+                    "liquidity": (
+                        f"The asset is accessible across {pair_count} exact-matched venues. "
+                        "Operational accessibility can reduce friction around a campaign, but liquidity "
+                        "and price depth are deliberately secondary in this persona. " + methodology
+                    ),
+                    "holder_count": (
+                        f"The matched markets recorded {total_txns_24h:,.0f} buys and sells in 24h. "
+                        "This is a possible attention proxy, not a count of unique participants, active "
+                        "contributors, new members, or retained members. " + methodology
+                    ),
+                    "holder_distribution": (
+                        f"Market activity is distributed across {pair_count} trading pairs. "
+                        "That venue footprint cannot substitute for community distribution across X, "
+                        "Reddit, Telegram, Discord, regions, or contributor cohorts. " + methodology
+                    ),
+                    "social_volume": social_detail,
+                    "social_trending": (
+                        f"Trailing DEX volume is ${total_volume_24h:,.0f}. It may indicate a moment worth "
+                        "investigating, but it cannot reveal which meme, creator, post, or narrative is "
+                        "trending. Connect social time series and content-level engagement before planning "
+                        "a scaled campaign. " + methodology
+                    ),
+                }
+
         adjustments = PERSONA_WEIGHT_ADJUST.get(self.current_persona, {})
         dimension_results = []
         for dim in DIMENSIONS:
             adj = adjustments.get(dim["key"], 0)
             dimension_results.append({
-                "dimension": dim["name"], "key": dim["key"],
+                "dimension": PERSONA_DIMENSION_NAMES.get(
+                    self.current_persona, {},
+                ).get(dim["key"], dim["name"]),
+                "key": dim["key"],
                 "score": scores.get(dim["key"], 0),
                 "weight": dim["weight"] + adj,
                 "detail": details.get(dim["key"], "Insufficient data"),
@@ -873,6 +1227,144 @@ requested writing style, but never alter, omit, or invent factual market metrics
         else:
             recommendation = recs.get(risk, "Insufficient data")
 
+        data_gaps = []
+        if not social_connected:
+            data_gaps.append({
+                "source": "X, Reddit, and channel-level community metrics",
+                "status": "not_connected",
+                "impact": (
+                    "Audience size, engagement quality, sentiment, retention, and "
+                    "content performance cannot be concluded from the current sources."
+                ),
+            })
+        data_gaps.append({
+            "source": "Wallet-level holder distribution",
+            "status": "not_connected",
+            "impact": "Unique-holder growth and concentration require a chain explorer source.",
+        })
+
+        persona_config = PERSONA_REPORT_CONFIG[self.current_persona]
+        if self.current_persona == "operator":
+            executive_conclusion = (
+                "Ops Verdict: treat this community as a validation sprint, not a scaled "
+                "campaign yet. Transaction activity offers a directional attention signal, "
+                "but community telemetry is not connected, so first establish the audience "
+                "baseline and test one repeatable participation loop."
+                if not social_connected else
+                "Ops Verdict: the available audience and activity signals justify a focused "
+                "seven-day activation sprint. Prioritize a repeatable participation loop and "
+                "measure qualified contributors rather than raw impressions."
+            )
+            recommendation = (
+                "Start with a seven-day community validation sprint. Connect X and Reddit "
+                "analytics, map the active conversation, publish one native meme prompt, run "
+                "a live interaction, and review contributor conversion before committing more "
+                "operating resources."
+            )
+            report_sections = [
+                {
+                    "title": "What Is Trending",
+                    "content": (
+                        f"{total_txns_24h:,.0f} DEX transactions and ${total_volume_24h:,.0f} "
+                        "in 24h volume indicate current market attention, but they do not reveal "
+                        "which narratives or community posts are driving it."
+                    ),
+                    "status": "proxy",
+                },
+                {
+                    "title": "Community Evidence & Gaps",
+                    "content": (
+                        "X/Reddit metrics are not connected. Establish follower, engagement, "
+                        "active-contributor, retention, and content-baseline measurements before "
+                        "claiming community strength."
+                        if not social_connected else
+                        "Connected audience size is a distribution signal; validate engagement "
+                        "quality, active contributors, retention, and content conversion next."
+                    ),
+                    "status": "not_connected" if not social_connected else "verified",
+                },
+                {
+                    "title": "Operating Opportunity",
+                    "content": (
+                        "Turn current attention into a simple loop: discover the strongest native "
+                        "narrative, invite low-friction meme participation, spotlight contributors, "
+                        "then convert the best response into a live community event."
+                    ),
+                    "status": "inference",
+                },
+            ]
+            day_themes = [
+                ("Day 1", "Join and listen", ["Join the primary X conversation; map 20 relevant accounts and 5 recurring topics."], "20 accounts mapped; 5 themes tagged"),
+                ("Day 2", "Content direction", ["Draft three narrative pillars and publish one native conversation prompt."], "3 pillars approved; baseline engagement recorded"),
+                ("Day 3", "Contributor activation", ["Invite 10 visible participants to a lightweight meme remix challenge."], "10 invites; at least 3 qualified submissions"),
+                ("Day 4", "Social proof", ["Feature the strongest community contribution and credit its creator."], "1 feature; contributor response rate tracked"),
+                ("Day 5", "Live interaction", ["Host an X Space, AMA, or live thread around the highest-response theme."], "1 event; attendance and questions recorded"),
+                ("Day 6", "Retention loop", ["Follow up with participants and invite them into the next content cycle."], "30% participant return or reply rate"),
+                ("Day 7", "Review and decide", ["Compare reach, engagement, contributors, and retention; choose scale, iterate, or pause."], "One documented resource-allocation decision"),
+            ]
+            action_plan = [
+                {
+                    "day": day, "theme": theme, "actions": actions, "kpi": kpi,
+                    "dependency": "Connect community analytics for verified measurement",
+                }
+                for day, theme, actions, kpi in day_themes
+            ]
+            key_inferences = [
+                {
+                    "inference": "There is observable attention, but community quality remains unverified.",
+                    "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'connected' if social_connected else 'not connected'}.",
+                    "confidence": "medium" if social_connected else "low",
+                },
+                {
+                    "inference": "A small validation sprint is more appropriate than a large campaign.",
+                    "evidence": "The current source set cannot measure active contributors, retention, or content conversion.",
+                    "confidence": "medium",
+                },
+            ]
+        elif self.current_persona == "builder":
+            executive_conclusion = (
+                "Build Priority: close the measurement gap before optimizing growth. "
+                "Instrument activation, holder cohorts, and feedback channels, then address "
+                "the weakest verified product signal."
+            )
+            report_sections = [
+                {"title": "Diagnosis", "content": "Market activity exists, but user and retention instrumentation is incomplete.", "status": "proxy"},
+                {"title": "Improvement Backlog", "content": "Prioritize analytics coverage, activation funnels, and a feedback-to-release loop.", "status": "inference"},
+            ]
+            action_plan = [
+                {"day": "Week 1", "theme": "Instrumentation", "actions": ["Connect wallet cohorts and community feedback sources."], "kpi": "Core activation funnel measurable", "dependency": "Explorer and social APIs"},
+                {"day": "Week 2", "theme": "Activation", "actions": ["Ship the highest-impact onboarding improvement."], "kpi": "Activation baseline and uplift reported", "dependency": "Week 1 baseline"},
+            ]
+            key_inferences = [{"inference": "The main blocker is observability, not a proven lack of demand.", "evidence": "Market activity is visible while user/community cohorts are not.", "confidence": "medium"}]
+        elif self.current_persona == "researcher":
+            executive_conclusion = (
+                "Research Finding: the evidence supports a market-activity description, "
+                "but not a community-health or holder-quality conclusion. Treat missing "
+                "sources as scope limitations, not zero observations."
+            )
+            report_sections = [
+                {"title": "Evidence & Method", "content": "DEX pair aggregates support liquidity and transaction observations.", "status": "verified"},
+                {"title": "Limitations", "content": "Social and wallet-cohort sources are incomplete; causal interpretation is not warranted.", "status": "not_connected"},
+            ]
+            action_plan = [
+                {"day": "Next study", "theme": "Data completion", "actions": ["Add social time series and explorer-level holder cohorts."], "kpi": "Coverage matrix completed", "dependency": "Social and explorer APIs"},
+            ]
+            key_inferences = [{"inference": "Observed turnover cannot establish organic community momentum.", "evidence": "Market activity and social engagement measure different constructs.", "confidence": "high"}]
+        else:
+            executive_conclusion = (
+                f"Investment Verdict: the asset scores {overall_score:.1f}/10. "
+                "Use the result as a screening signal; verify execution depth, holder "
+                "concentration, and missing social coverage before changing exposure."
+            )
+            report_sections = [
+                {"title": "Market Evidence", "content": f"Aggregate DEX liquidity is ${total_liquidity:,.0f} across {pair_count} exact pairs.", "status": "verified"},
+                {"title": "Risk & Reward", "content": recommendation, "status": "inference"},
+            ]
+            action_plan = [
+                {"day": "Before exposure", "theme": "Validate execution", "actions": ["Check route depth, holder concentration, and invalidation thresholds."], "kpi": "Position and exit limits documented", "dependency": "Explorer-level holder data"},
+            ]
+            key_inferences = [{"inference": "Execution quality is the primary observable decision input.", "evidence": f"${total_liquidity:,.0f} aggregate liquidity and ${total_volume_24h:,.0f} 24h volume.", "confidence": "medium"}]
+
         return {
             "token": token_info,
             "persona": self.current_persona,
@@ -880,6 +1372,12 @@ requested writing style, but never alter, omit, or invent factual market metrics
             "overall_score": round(overall_score, 1),
             "risk_level": risk,
             "recommendation": recommendation,
+            "executive_conclusion": executive_conclusion,
+            "key_inferences": key_inferences,
+            "report_sections": report_sections,
+            "action_plan": action_plan,
+            "data_gaps": data_gaps,
+            "decision_label": persona_config["decision_label"],
             "health_indicators": {
                 "positive": [f"DEX liquidity ${total_liquidity:,.0f}"] if liq_score >= 6 else [],
                 "negative": ["Low 24h trading volume"] if total_volume_24h < 10000 else [],
