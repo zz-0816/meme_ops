@@ -88,21 +88,38 @@ def decrypt_secret(value: str | None) -> str | None:
 
 
 def social_provider_status() -> dict:
+    encryption_configured = bool(
+        os.getenv("SOCIAL_TOKEN_ENCRYPTION_KEY", "").strip()
+    )
+    x_client_id_configured = bool(os.getenv("X_CLIENT_ID", "").strip())
+    x_client_secret_configured = bool(os.getenv("X_CLIENT_SECRET", "").strip())
+    x_bearer_configured = bool(os.getenv("X_BEARER_TOKEN", "").strip())
+    telegram_token_configured = bool(
+        os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    )
+    telegram_username_configured = bool(
+        os.getenv("TELEGRAM_BOT_USERNAME", "").strip()
+    )
+    telegram_webhook_configured = bool(
+        os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    )
     return {
-        "encryption_configured": bool(os.getenv("SOCIAL_TOKEN_ENCRYPTION_KEY", "").strip()),
+        "encryption_configured": encryption_configured,
         "x": {
-            "oauth_configured": bool(os.getenv("X_CLIENT_ID", "").strip()),
-            "shared_collector_configured": bool(os.getenv("X_BEARER_TOKEN", "").strip()),
+            "oauth_configured": x_client_id_configured,
+            "shared_collector_configured": x_bearer_configured,
+            "client_id_configured": x_client_id_configured,
+            "client_secret_configured": x_client_secret_configured,
+            "bearer_token_configured": x_bearer_configured,
             "mode": "official-api",
         },
         "telegram": {
-            "login_configured": bool(
-                os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-                and os.getenv("TELEGRAM_BOT_USERNAME", "").strip()
+            "login_configured": (
+                telegram_token_configured and telegram_username_configured
             ),
-            "webhook_configured": bool(
-                os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
-            ),
+            "bot_token_configured": telegram_token_configured,
+            "bot_username_configured": telegram_username_configured,
+            "webhook_configured": telegram_webhook_configured,
             "mode": "login-widget-and-bot",
             "auto_webhook": os.getenv("TELEGRAM_AUTO_SET_WEBHOOK", "false").lower() == "true",
         },

@@ -686,7 +686,10 @@ body {
 .social-settings-heading p,.social-privacy-note { margin-top:4px; color:var(--text-muted); font-size:.72rem; line-height:1.45; }
 .private-pill { flex:0 0 auto; padding:4px 8px; border-radius:999px; background:rgba(0,230,118,.1); color:var(--green); font-size:.65rem; }
 .social-connection-card { display:flex; align-items:center; gap:12px; margin-top:9px; padding:13px; border:1px solid var(--border); border-radius:12px; background:var(--bg-input); }
-.social-provider-icon { display:flex; align-items:center; justify-content:center; flex:0 0 38px; height:38px; border-radius:50%; background:rgba(108,99,255,.16); color:var(--text); font-weight:800; }
+.social-brand-logo { display:flex; align-items:center; justify-content:center; flex:0 0 42px; width:42px; height:42px; border-radius:50%; box-shadow:0 8px 24px rgba(0,0,0,.22); }
+.social-brand-logo svg { width:21px; height:21px; fill:white; }
+.social-brand-x { background:#050505; border:1px solid #34343f; }
+.social-brand-telegram { background:#229ed9; }
 .social-provider-copy { min-width:0; display:flex; flex:1; flex-direction:column; gap:2px; }
 .social-provider-copy span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:.76rem; }
 .social-provider-copy small,.social-connection-loading,.social-connection-error { color:var(--text-muted); font-size:.68rem; }
@@ -694,6 +697,10 @@ body {
 .social-card-actions { display:flex; gap:7px; }
 .social-connection-card button:disabled { opacity:.45; cursor:not-allowed; }
 .social-connection-card .danger-link { color:var(--red); }
+.social-connection-card.is-connected { border-color:rgba(0,230,118,.35); box-shadow:inset 3px 0 var(--green); }
+.social-connect-button { min-width:112px; border-color:rgba(108,99,255,.65); background:rgba(108,99,255,.14); color:white; }
+.telegram-connect { border-color:rgba(34,158,217,.72); background:rgba(34,158,217,.16); }
+.social-setup-badge { flex:0 0 auto; padding:6px 9px; border:1px solid rgba(255,191,0,.32); border-radius:999px; background:rgba(255,191,0,.08); color:var(--yellow); font-size:.66rem; font-weight:700; }
 .social-login-dialog .quote-header p { margin-top:4px; color:var(--text-muted); font-size:.72rem; }
 #telegramWidgetMount { min-height:64px; display:flex; align-items:center; justify-content:center; padding:18px; }
 .settings-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
@@ -738,6 +745,16 @@ body {
 .overview-hero h1 { max-width:720px;font-size:clamp(2rem,5vw,4.3rem);line-height:1.02;letter-spacing:-.045em;margin:12px 0 20px; }
 .overview-hero>p { max-width:720px;color:var(--text-muted);font-size:1.06rem;line-height:1.75; }
 .overview-actions { display:flex;gap:10px;flex-wrap:wrap;margin-top:28px; }
+.overview-social { max-width:980px;margin:0 auto 28px;padding:26px;border:1px solid rgba(108,99,255,.42);border-radius:18px;background:linear-gradient(135deg,rgba(108,99,255,.13),rgba(34,158,217,.06)),var(--bg-card);box-shadow:0 18px 50px rgba(0,0,0,.18); }
+.overview-social-heading { display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:16px; }
+.overview-social-heading h2 { margin:8px 0 7px;font-size:1.28rem; }
+.overview-social-heading p { max-width:700px;margin:0;color:var(--text-muted);font-size:.82rem;line-height:1.6; }
+.social-connection-list-prominent { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }
+.social-connection-list-prominent .social-connection-card { margin:0;min-height:92px;background:rgba(10,15,35,.58); }
+.overview-social-gate { display:flex;align-items:center;gap:10px;padding:16px;border:1px solid var(--border);border-radius:14px;background:rgba(10,15,35,.58); }
+.overview-social-gate .social-brand-logo + .social-brand-logo { margin-left:-17px; }
+.overview-social-gate>div { display:flex;min-width:0;flex:1;flex-direction:column;gap:3px;margin-left:5px; }
+.overview-social-gate>div span { color:var(--text-muted);font-size:.75rem; }
 .overview-grid { max-width:980px;margin:0 auto 70px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px; }
 .overview-grid article { padding:22px;background:var(--bg-card);border:1px solid var(--border);border-radius:14px; }
 .overview-grid article>span { color:var(--accent);font:700 .72rem/1 monospace; }
@@ -756,11 +773,20 @@ body {
 
 @media (max-width:900px) {
     .overview-grid { grid-template-columns:repeat(2,1fr); }
+    .social-connection-list-prominent { grid-template-columns:1fr; }
     .chart-first .poster-card>div { grid-template-columns:1fr; }
     .analysis-report-frame { min-height:920px; }
 }
 @media (max-width:600px) {
     .overview-hero { margin-top:24px;padding:28px 20px; }
+    .overview-social { padding:20px; }
+    .overview-social-heading { flex-direction:column;gap:10px; }
+    .overview-social-gate { align-items:flex-start;flex-wrap:wrap; }
+    .overview-social-gate>div { flex-basis:calc(100% - 80px); }
+    .overview-social-gate .btn { width:100%; }
+    .social-connection-card { align-items:flex-start;flex-wrap:wrap; }
+    .social-provider-copy { flex-basis:calc(100% - 58px); }
+    .social-card-actions,.social-connection-card>.social-setup-badge,.social-connection-card>.btn-small { width:100%;justify-content:flex-end; }
     .overview-grid { grid-template-columns:1fr; }
     .poster-toolbar { grid-template-columns:1fr; }
     .poster-toolbar>span { text-align:left; }

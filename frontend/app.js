@@ -1190,12 +1190,33 @@ function renderOverview() {
                 <button class="btn btn-secondary" onclick="switchTab('community')">Explore community</button>
             </div>
         </section>
+        <section class="overview-social">
+            <div class="overview-social-heading">
+                <div>
+                    <span class="eyebrow">LIVE SOCIAL INTELLIGENCE</span>
+                    <h2>Connect the communities you operate.</h2>
+                    <p>Authorize read-only X and Telegram access so the Ops Agent can ground reports in current community signals. Connections remain private to this wallet.</p>
+                </div>
+                <span class="private-pill">Wallet private</span>
+            </div>
+            <div id="overviewSocialConnections">
+                ${state.token
+                    ? '<div class="social-connection-loading">Checking X and Telegram...</div>'
+                    : `<div class="overview-social-gate">
+                        ${socialProviderLogo('x')}
+                        ${socialProviderLogo('telegram')}
+                        <div><strong>Connect your wallet first</strong><span>Social accounts are stored per wallet and never shared with other users.</span></div>
+                        <button class="btn btn-primary" onclick="connectWallet()">Connect wallet</button>
+                    </div>`}
+            </div>
+        </section>
         <section class="overview-grid">
             <article><span>01</span><h3>Conclusion first</h3><p>See the role-specific verdict before supporting data.</p></article>
             <article><span>02</span><h3>Actionable operations</h3><p>Receive daily activities, dependencies, and measurable KPIs.</p></article>
             <article><span>03</span><h3>Honest evidence</h3><p>Disconnected sources stay neutral and are never presented as zero.</p></article>
             <article><span>04</span><h3>Private memory</h3><p>Your wallet keeps modules, report preferences, history, and watchlists private.</p></article>
         </section>`;
+    if (state.token) loadSocialConnections('overviewSocialConnections', true);
 }
 
 async function renderAnalysis() {
@@ -1901,11 +1922,97 @@ async function renderProfileSettings() {
                 <button class="btn btn-primary" onclick="saveProfileSettings()">Save profile</button>
             </div>
         </section>`;
-    await loadSocialConnections();
+    await loadSocialConnections('socialConnections');
 }
 
-async function loadSocialConnections() {
-    const el = document.getElementById('socialConnections');
+function socialProviderLogo(provider) {
+    if (provider === 'x') {
+        return `<span class="social-brand-logo social-brand-x" aria-label="X">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.657l-5.214-6.817-5.967 6.817H1.68l7.73-8.835L1.254 2.25h6.826l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z"/></svg>
+        </span>`;
+    }
+    return `<span class="social-brand-logo social-brand-telegram" aria-label="Telegram">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.94 4.67 18.9 19.01c-.23 1.01-.83 1.26-1.68.78l-4.63-3.41-2.23 2.15c-.25.25-.46.46-.94.46l.33-4.72 8.59-7.76c.37-.33-.08-.52-.58-.19L7.14 13.01l-4.57-1.43c-.99-.31-1.01-.99.21-1.47L20.65 3.2c.83-.3 1.55.2 1.29 1.47Z"/></svg>
+    </span>`;
+}
+
+function socialConfigurationMessage(providerName, provider, encryptionConfigured) {
+    const missing = [];
+    if (!encryptionConfigured) missing.push('SOCIAL_TOKEN_ENCRYPTION_KEY');
+    if (providerName === 'x' && provider.client_id_configured === false) {
+        missing.push('X_CLIENT_ID');
+    }
+    if (providerName === 'telegram') {
+        if (provider.bot_username_configured === false) missing.push('TELEGRAM_BOT_USERNAME');
+        if (provider.bot_token_configured === false) missing.push('TELEGRAM_BOT_TOKEN');
+    }
+    if (missing.length) return `Server setup required: ${missing.join(', ')}`;
+    return providerName === 'x'
+        ? 'X OAuth app is not configured'
+        : 'Telegram bot is not configured';
+}
+
+function socialConnectionCards(data, prominent = false) {
+    const byProvider = Object.fromEntries(
+        (data.connections || []).map(item => [item.provider, item])
+    );
+    const x = byProvider.x;
+    const telegram = byProvider.telegram;
+    const provider = data.provider_status || {};
+    const encryptionConfigured = Boolean(provider.encryption_configured);
+    const xStatus = provider.x || {};
+    const telegramStatus = provider.telegram || {};
+    const xReady = encryptionConfigured && xStatus.oauth_configured;
+    const telegramReady = encryptionConfigured && telegramStatus.login_configured;
+    const xAction = x
+        ? `<button class="btn-small danger-link" onclick="disconnectSocial('x')">Disconnect</button>`
+        : xReady
+            ? '<button class="btn-small social-connect-button" onclick="connectSocialX()">Connect X</button>'
+            : '<span class="social-setup-badge">Setup required</span>';
+    const telegramAction = telegram
+        ? `<button class="btn-small danger-link" onclick="disconnectSocial('telegram')">Disconnect</button>`
+        : telegramReady
+            ? '<button class="btn-small social-connect-button telegram-connect" onclick="connectSocialTelegram()">Connect Telegram</button>'
+            : '<span class="social-setup-badge">Setup required</span>';
+    const communities = data.communities || [];
+    return `
+        <div class="social-connection-list ${prominent ? 'social-connection-list-prominent' : ''}">
+            <article class="social-connection-card ${x ? 'is-connected' : ''}">
+                ${socialProviderLogo('x')}
+                <div class="social-provider-copy">
+                    <strong>X</strong>
+                    <span>${x
+                        ? `Connected as @${escapeHtml(x.username || x.provider_user_id)}`
+                        : xReady
+                            ? 'Ready to connect'
+                            : escapeHtml(socialConfigurationMessage('x', xStatus, encryptionConfigured))}</span>
+                    <small>Recent post volume, active authors, and public engagement signals.</small>
+                </div>
+                ${xAction}
+            </article>
+            <article class="social-connection-card ${telegram ? 'is-connected' : ''}">
+                ${socialProviderLogo('telegram')}
+                <div class="social-provider-copy">
+                    <strong>Telegram</strong>
+                    <span>${telegram
+                        ? `Connected as @${escapeHtml(telegram.username || telegram.provider_user_id)}`
+                        : telegramReady
+                            ? 'Ready to connect'
+                            : escapeHtml(socialConfigurationMessage('telegram', telegramStatus, encryptionConfigured))}</span>
+                    <small>${communities.length
+                        ? `${communities.length} group/channel connection(s)`
+                        : 'Connect your identity, then bind groups or channels for member signals.'}</small>
+                </div>
+                <div class="social-card-actions">
+                    ${telegram ? '<button class="btn-small" onclick="createTelegramGroupCode()">Bind group</button>' : ''}
+                    ${telegramAction}
+                </div>
+            </article>
+        </div>`;
+}
+
+async function loadSocialConnections(targetId = 'socialConnections', prominent = false) {
+    const el = document.getElementById(targetId);
     if (!el || !state.token) return;
     const resp = await fetch(`${API_BASE}/api/social/connections`, {
         headers: {'Authorization': `Bearer ${state.token}`},
@@ -1915,43 +2022,7 @@ async function loadSocialConnections() {
         return;
     }
     const data = await resp.json();
-    const byProvider = Object.fromEntries(
-        (data.connections || []).map(item => [item.provider, item])
-    );
-    const x = byProvider.x;
-    const telegram = byProvider.telegram;
-    const provider = data.provider_status || {};
-    const xReady = provider.encryption_configured && provider.x?.oauth_configured;
-    const telegramReady = provider.encryption_configured && provider.telegram?.login_configured;
-    const xAction = x
-        ? `<button class="btn-small danger-link" onclick="disconnectSocial('x')">Disconnect</button>`
-        : `<button class="btn-small" onclick="connectSocialX()" ${xReady ? '' : 'disabled'}>Connect X</button>`;
-    const telegramAction = telegram
-        ? `<button class="btn-small danger-link" onclick="disconnectSocial('telegram')">Disconnect</button>`
-        : `<button class="btn-small" onclick="connectSocialTelegram()" ${telegramReady ? '' : 'disabled'}>Connect Telegram</button>`;
-    const communities = data.communities || [];
-    el.innerHTML = `
-        <article class="social-connection-card">
-            <div class="social-provider-icon">𝕏</div>
-            <div class="social-provider-copy">
-                <strong>X</strong>
-                <span>${x ? `Connected as @${escapeHtml(x.username || x.provider_user_id)}` : !provider.encryption_configured ? 'Server token encryption is not configured' : provider.x?.oauth_configured ? 'Not connected' : 'OAuth app is not configured'}</span>
-                <small>Read-only recent post counts and public community signals.</small>
-            </div>
-            ${xAction}
-        </article>
-        <article class="social-connection-card">
-            <div class="social-provider-icon">TG</div>
-            <div class="social-provider-copy">
-                <strong>Telegram</strong>
-                <span>${telegram ? `Connected as @${escapeHtml(telegram.username || telegram.provider_user_id)}` : !provider.encryption_configured ? 'Server token encryption is not configured' : provider.telegram?.login_configured ? 'Not connected' : 'Telegram bot is not configured'}</span>
-                <small>${communities.length ? `${communities.length} group/channel connection(s)` : 'Bind a group after identity login to collect member counts.'}</small>
-            </div>
-            <div class="social-card-actions">
-                ${telegram ? '<button class="btn-small" onclick="createTelegramGroupCode()">Bind group</button>' : ''}
-                ${telegramAction}
-            </div>
-        </article>`;
+    el.innerHTML = socialConnectionCards(data, prominent);
 }
 
 async function socialApi(path, options = {}) {

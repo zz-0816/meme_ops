@@ -69,6 +69,22 @@ class SocialIntegrationTests(unittest.TestCase):
             social.list_connections("0xbbb")["connections"][0]["username"], "b"
         )
 
+    def test_provider_status_identifies_missing_telegram_requirement(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_BOT_USERNAME": "meme_ops_test_bot",
+                "TELEGRAM_BOT_TOKEN": "",
+            },
+            clear=False,
+        ):
+            status = social.social_provider_status()
+        self.assertTrue(status["encryption_configured"])
+        self.assertTrue(status["x"]["client_id_configured"])
+        self.assertTrue(status["telegram"]["bot_username_configured"])
+        self.assertFalse(status["telegram"]["bot_token_configured"])
+        self.assertFalse(status["telegram"]["login_configured"])
+
     def test_oauth_state_is_temporary_and_one_time(self):
         pending = social._save_oauth_state("0xaaa", "x", "verifier")
         result = social._consume_oauth_state(pending, "x")
