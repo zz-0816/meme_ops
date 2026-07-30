@@ -17,6 +17,7 @@ from config import load_project_env
 from intent import extract_analysis_intent, infer_writing_profile
 from asset_resolver import is_contract_address, requested_asset_terms, select_exact_pairs
 from database import get_persona_rag_entries, upsert_persona_rag_entry
+from social import enrich_raw_data_with_social
 
 load_project_env()
 
@@ -198,6 +199,7 @@ class MemeOpsAgent:
                 request_intent.get("chain"),
                 prompt,
             )
+            raw_data = await enrich_raw_data_with_social(raw_data, owner_address)
         except Exception as e:
             raw_data = {"query": prompt, "dexscreener": {}, "coingecko": {}, "_sources": [], "_error": str(e)}
 
@@ -920,6 +922,36 @@ to the requested writing style, but never alter, omit, or invent factual market 
         else:
             parts.append("### CoinGecko: no data found")
 
+        social = raw_data.get("social") or {}
+        if social.get("connected"):
+            parts.append("\n### Connected social intelligence")
+            for metric in social.get("metrics") or []:
+                provider = str(metric.get("provider") or "social").upper()
+                available = []
+                for key, label in (
+                    ("followers", "followers"),
+                    ("members", "members"),
+                    ("mentions_24h", "mentions/24h"),
+                    ("posts_24h", "posts/24h"),
+                    ("engagements_24h", "engagements/24h"),
+                ):
+                    if metric.get(key) is not None:
+                        available.append(f"{label}: {metric[key]:,}")
+                parts.append(
+                    f"- {provider}: {', '.join(available) or 'snapshot available'} "
+                    f"(source={metric.get('source_mode')}, confidence={metric.get('confidence')})"
+                )
+            for document in (social.get("rag_documents") or [])[:4]:
+                parts.append(
+                    f"- Social RAG [{document.get('platform')}]: {document.get('content')}"
+                )
+        else:
+            parts.append(
+                "\n### Social intelligence: not connected\n"
+                "- No shared or wallet-bound X/Telegram snapshot is available for this exact asset. "
+                "Do not infer zero followers, weak discussion, or low community quality."
+            )
+
         return "\n".join(parts) if parts else "No data available"
 
     # ============ 兜底分析（无 LLM API Key 时） ============
@@ -964,7 +996,21 @@ to the requested writing style, but never alter, omit, or invent factual market 
         reddit_raw = community_data.get("reddit_subscribers")
         twitter_followers = twitter_raw if isinstance(twitter_raw, (int, float)) and twitter_raw > 0 else None
         reddit_subscribers = reddit_raw if isinstance(reddit_raw, (int, float)) and reddit_raw > 0 else None
-        social_connected = twitter_followers is not None or reddit_subscribers is not None
+        social_context = raw_data.get("social") or {}
+        social_metrics = social_context.get("metrics") or []
+        x_mentions = sum(
+            int(item.get("mentions_24h") or 0)
+            for item in social_metrics if item.get("provider") == "x"
+        ) or None
+        telegram_members = sum(
+            int(item.get("members") or 0)
+            for item in social_metrics if item.get("provider") == "telegram"
+        ) or None
+        social_connected = bool(
+            twitter_followers is not None
+            or reddit_subscribers is not None
+            or social_context.get("connected")
+        )
         market_cap = (cg.get("market_data", {}).get("market_cap", {}).get("usd", 0) or 0) if cg else 0
 
         # 详细打分
@@ -975,8 +1021,23 @@ to the requested writing style, but never alter, omit, or invent factual market 
         # Missing coverage must not penalize the asset as if it had a verified zero audience.
         social_score = (
             min(10, round((twitter_followers / 1000) ** 0.4 * 3, 1))
-            if twitter_followers is not None else 5.0
+            if twitter_followers is not None
+            else min(10, round((telegram_members / 1000) ** 0.4 * 3, 1))
+            if telegram_members is not None
+            else min(10, round((x_mentions / 100) ** 0.4 * 3, 1))
+            if x_mentions is not None
+            else 5.0
         )
+        if twitter_followers is not None:
+            social_reach_evidence = f"{twitter_followers:,.0f} connected X followers"
+        elif telegram_members is not None:
+            social_reach_evidence = (
+                f"{telegram_members:,.0f} members across connected Telegram communities"
+            )
+        elif x_mentions is not None:
+            social_reach_evidence = f"{x_mentions:,.0f} X mentions in the provider window"
+        else:
+            social_reach_evidence = "No connected social audience metric"
         trend_score = min(10, round(total_volume_24h / 1_000_000 * 2, 1)) if total_volume_24h > 0 else 0
 
         scores = {"liquidity": liq_score, "holder_count": holder_score, "holder_distribution": dist_score,
@@ -1000,7 +1061,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             ),
             "social_volume": (
                 (
-                    f"The connected source reports approximately {twitter_followers:,.0f} X followers. "
+                    f"The connected source reports {social_reach_evidence}. "
                     f"{'Community reach appears strong.' if social_score >= 7 else 'Community reach appears moderate.'}"
                 )
                 if social_connected else
@@ -1051,7 +1112,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 ),
                 "social_volume": (
                     (
-                        f"{twitter_followers:,.0f} connected X followers indicate "
+                        f"{social_reach_evidence} indicates "
                         f"{'strong' if social_score >= 7 else 'moderate'} potential reach."
                     )
                     if social_connected else
@@ -1088,8 +1149,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 ),
                 "social_volume": (
                     (
-                        f"The connected community source reports approximately {twitter_followers:,.0f} X "
-                        f"followers, corresponding to a "
+                        f"The connected community source reports {social_reach_evidence}, "
+                        f"corresponding to a "
                         f"{'strong' if social_score >= 7 else 'moderate'} potential-reach signal. "
                         "Follower count does not establish discussion quality. Engagement rate, account "
                         "quality, sentiment dispersion, and campaign-adjusted growth remain unavailable."
@@ -1111,8 +1172,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
 
         if self.current_persona == "operator":
             social_detail = (
-                f"The connected source reports approximately {twitter_followers:,.0f} X "
-                "followers. Treat reach as distribution capacity only; engagement quality, "
+                f"The connected source reports {social_reach_evidence}. "
+                "Treat reach as distribution capacity only; engagement quality, "
                 "active contributors, retention, and content conversion still require direct telemetry."
                 if social_connected else
                 "X and Reddit community metrics are not connected. No audience-size, engagement, "

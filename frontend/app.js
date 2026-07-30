@@ -1885,11 +1885,149 @@ async function renderProfileSettings() {
                 <textarea id="settingsBio" maxlength="240" placeholder="Share your research focus, project, or community role">${escapeHtml(me.bio || '')}</textarea>
             </label>
             <div class="readonly-wallet"><span>Wallet address</span><code>${escapeHtml(state.address)}</code></div>
+            <section class="social-settings">
+                <div class="social-settings-heading">
+                    <div>
+                        <strong>Social data connections</strong>
+                        <p>Connect read-only X and Telegram identities to collect signals for assets outside the shared Top 100 universe.</p>
+                    </div>
+                    <span class="private-pill">Wallet private</span>
+                </div>
+                <div id="socialConnections"><div class="social-connection-loading">Loading connection status...</div></div>
+                <p class="social-privacy-note">Access tokens are encrypted on the server. They are never shown to other users or returned to this browser.</p>
+            </section>
             <div class="settings-actions">
                 <button class="btn-small" onclick="location.hash='#/profile'">Cancel</button>
                 <button class="btn btn-primary" onclick="saveProfileSettings()">Save profile</button>
             </div>
         </section>`;
+    await loadSocialConnections();
+}
+
+async function loadSocialConnections() {
+    const el = document.getElementById('socialConnections');
+    if (!el || !state.token) return;
+    const resp = await fetch(`${API_BASE}/api/social/connections`, {
+        headers: {'Authorization': `Bearer ${state.token}`},
+    });
+    if (!resp.ok) {
+        el.innerHTML = '<div class="social-connection-error">Unable to load social connection status.</div>';
+        return;
+    }
+    const data = await resp.json();
+    const byProvider = Object.fromEntries(
+        (data.connections || []).map(item => [item.provider, item])
+    );
+    const x = byProvider.x;
+    const telegram = byProvider.telegram;
+    const provider = data.provider_status || {};
+    const xReady = provider.encryption_configured && provider.x?.oauth_configured;
+    const telegramReady = provider.encryption_configured && provider.telegram?.login_configured;
+    const xAction = x
+        ? `<button class="btn-small danger-link" onclick="disconnectSocial('x')">Disconnect</button>`
+        : `<button class="btn-small" onclick="connectSocialX()" ${xReady ? '' : 'disabled'}>Connect X</button>`;
+    const telegramAction = telegram
+        ? `<button class="btn-small danger-link" onclick="disconnectSocial('telegram')">Disconnect</button>`
+        : `<button class="btn-small" onclick="connectSocialTelegram()" ${telegramReady ? '' : 'disabled'}>Connect Telegram</button>`;
+    const communities = data.communities || [];
+    el.innerHTML = `
+        <article class="social-connection-card">
+            <div class="social-provider-icon">𝕏</div>
+            <div class="social-provider-copy">
+                <strong>X</strong>
+                <span>${x ? `Connected as @${escapeHtml(x.username || x.provider_user_id)}` : !provider.encryption_configured ? 'Server token encryption is not configured' : provider.x?.oauth_configured ? 'Not connected' : 'OAuth app is not configured'}</span>
+                <small>Read-only recent post counts and public community signals.</small>
+            </div>
+            ${xAction}
+        </article>
+        <article class="social-connection-card">
+            <div class="social-provider-icon">TG</div>
+            <div class="social-provider-copy">
+                <strong>Telegram</strong>
+                <span>${telegram ? `Connected as @${escapeHtml(telegram.username || telegram.provider_user_id)}` : !provider.encryption_configured ? 'Server token encryption is not configured' : provider.telegram?.login_configured ? 'Not connected' : 'Telegram bot is not configured'}</span>
+                <small>${communities.length ? `${communities.length} group/channel connection(s)` : 'Bind a group after identity login to collect member counts.'}</small>
+            </div>
+            <div class="social-card-actions">
+                ${telegram ? '<button class="btn-small" onclick="createTelegramGroupCode()">Bind group</button>' : ''}
+                ${telegramAction}
+            </div>
+        </article>`;
+}
+
+async function socialApi(path, options = {}) {
+    const resp = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: {
+            ...(options.body ? {'Content-Type': 'application/json'} : {}),
+            'Authorization': `Bearer ${state.token}`,
+            ...(options.headers || {}),
+        },
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || 'Social connection request failed');
+    return data;
+}
+
+async function connectSocialX() {
+    try {
+        const data = await socialApi('/api/social/x/connect', {method: 'POST'});
+        location.href = data.authorization_url;
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function connectSocialTelegram() {
+    try {
+        const data = await socialApi('/api/social/telegram/connect', {method: 'POST'});
+        const overlay = document.createElement('div');
+        overlay.className = 'quote-overlay';
+        overlay.id = 'telegramLoginOverlay';
+        overlay.onclick = event => {
+            if (event.target === overlay) overlay.remove();
+        };
+        overlay.innerHTML = `
+            <div class="quote-dialog social-login-dialog">
+                <div class="quote-header">
+                    <div><strong>Connect Telegram</strong><p>Telegram verifies your identity; no Telegram password is shared with meme_ops.</p></div>
+                    <button onclick="document.getElementById('telegramLoginOverlay').remove()">×</button>
+                </div>
+                <div id="telegramWidgetMount"></div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://telegram.org/js/telegram-widget.js?22';
+        script.setAttribute('data-telegram-login', data.bot_username);
+        script.setAttribute('data-size', 'large');
+        script.setAttribute('data-auth-url', data.callback_url);
+        script.setAttribute('data-request-access', 'write');
+        document.getElementById('telegramWidgetMount').appendChild(script);
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function disconnectSocial(provider) {
+    if (!confirm(`Disconnect ${provider === 'x' ? 'X' : 'Telegram'} from this wallet?`)) return;
+    try {
+        await socialApi(`/api/social/connections/${provider}`, {method: 'DELETE'});
+        await loadSocialConnections();
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function createTelegramGroupCode() {
+    try {
+        const data = await socialApi('/api/social/telegram/link-code', {
+            method: 'POST',
+            body: JSON.stringify({}),
+        });
+        alert(`${data.instruction}\n\nThe code expires in 15 minutes.`);
+    } catch (error) {
+        alert(error.message);
+    }
 }
 
 function avatarMarkup(avatar, fallback, label = '') {

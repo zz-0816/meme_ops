@@ -14,9 +14,10 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 
 from database import (
     init_db, save_analysis, get_history, get_analysis_detail,
@@ -41,6 +42,16 @@ from image_provider import (
 )
 from poster_planner import build_poster_plan
 from comparison import build_comparison_report
+from social import (
+    SocialCollector, SocialConfigurationError,
+    begin_x_connection, complete_x_connection,
+    begin_telegram_connection, complete_telegram_connection,
+    create_telegram_link_code, disconnect_provider,
+    configure_telegram_webhook,
+    latest_social_context, list_connections, list_social_assets,
+    process_telegram_webhook, social_provider_status,
+    start_social_scheduler, stop_social_scheduler,
+)
 from models import (
     AnalyzeRequest, ComparisonRequest, LoginRequest,
     CreatePostRequest, RepostRequest, MintNFTRequest,
@@ -78,6 +89,17 @@ _poster_draft_cache = {}
 async def startup():
     init_db()
     agent.reload_memory()
+    start_social_scheduler()
+    if os.getenv("TELEGRAM_AUTO_SET_WEBHOOK", "false").lower() == "true":
+        try:
+            await configure_telegram_webhook()
+        except Exception as error:
+            print(f"Telegram webhook setup skipped: {error}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await stop_social_scheduler()
 
 
 # ============ 认证中间件 ============
@@ -166,6 +188,132 @@ async def top_memes():
 @app.get("/api/analysis/provider")
 async def api_analysis_provider_status():
     return analysis_provider_status()
+
+
+# ============ Social connections and intelligence ============
+
+@app.get("/api/social/provider")
+async def api_social_provider_status():
+    return social_provider_status()
+
+
+@app.get("/api/social/connections")
+async def api_social_connections(user=Depends(get_current_user)):
+    return list_connections(user)
+
+
+@app.post("/api/social/x/connect")
+async def api_connect_x(user=Depends(get_current_user)):
+    try:
+        return begin_x_connection(user)
+    except SocialConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/social/x/callback")
+async def api_x_callback(code: str = "", state: str = "", error: str = ""):
+    if error:
+        return RedirectResponse(url=f"/?social=x&status=cancelled&reason={error}#/settings")
+    try:
+        result = await complete_x_connection(code, state)
+        return RedirectResponse(
+            url=f"/?social=x&status=connected{result['redirect_path']}"
+        )
+    except Exception as callback_error:
+        message = str(callback_error)[:160].replace(" ", "%20")
+        return RedirectResponse(url=f"/?social=x&status=error&reason={message}#/settings")
+
+
+@app.post("/api/social/telegram/connect")
+async def api_connect_telegram(user=Depends(get_current_user)):
+    try:
+        return begin_telegram_connection(user)
+    except SocialConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/social/telegram/callback")
+async def api_telegram_callback(request: Request):
+    payload = dict(request.query_params)
+    try:
+        result = complete_telegram_connection(payload)
+        return RedirectResponse(
+            url=f"/?social=telegram&status=connected{result['redirect_path']}"
+        )
+    except Exception as callback_error:
+        message = str(callback_error)[:160].replace(" ", "%20")
+        return RedirectResponse(
+            url=f"/?social=telegram&status=error&reason={message}#/settings"
+        )
+
+
+@app.post("/api/social/telegram/link-code")
+async def api_telegram_link_code(data: dict, user=Depends(get_current_user)):
+    try:
+        return create_telegram_link_code(user, data.get("asset_key"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/social/telegram/webhook")
+async def api_telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(None),
+):
+    configured = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if not configured or not secrets_compare(
+        configured, x_telegram_bot_api_secret_token or "",
+    ):
+        raise HTTPException(status_code=401, detail="Telegram webhook secret is invalid")
+    try:
+        return await process_telegram_webhook(await request.json())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def secrets_compare(left: str, right: str) -> bool:
+    import hmac
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+@app.delete("/api/social/connections/{provider}")
+async def api_disconnect_social(provider: str, user=Depends(get_current_user)):
+    if not disconnect_provider(user, provider.lower()):
+        raise HTTPException(status_code=404, detail="Social connection not found")
+    return {"message": f"{provider} disconnected"}
+
+
+@app.get("/api/social/assets")
+async def api_social_assets(limit: int = 100):
+    return {"items": list_social_assets(max(100, min(limit, 500)))}
+
+
+@app.get("/api/social/assets/{asset_key:path}/insights")
+async def api_social_asset_insights(asset_key: str):
+    context = latest_social_context(asset_key)
+    if not context["metrics"] and not context["rag_documents"]:
+        raise HTTPException(status_code=404, detail="No social intelligence collected yet")
+    return context
+
+
+@app.post("/api/social/assets/{asset_key:path}/collect")
+async def api_collect_social_asset(
+    asset_key: str, user=Depends(get_current_user),
+):
+    asset = next(
+        (item for item in list_social_assets(500) if item["asset_key"] == asset_key),
+        None,
+    )
+    if not asset:
+        raise HTTPException(status_code=404, detail="Social asset is not registered")
+    try:
+        result = await SocialCollector().collect_asset(asset, user)
+    except SocialConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return {
+        **result,
+        "context": latest_social_context(asset_key, owner_address=user),
+    }
 
 
 # ============ 认证 API ============

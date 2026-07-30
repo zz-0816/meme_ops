@@ -81,6 +81,151 @@ CREATE TABLE IF NOT EXISTS persona_rag_entries (
 CREATE INDEX IF NOT EXISTS idx_persona_rag_lookup
 ON persona_rag_entries(owner_address, persona, entry_type, updated_at DESC);
 
+-- ============ Social connections and shared intelligence ============
+
+CREATE TABLE IF NOT EXISTS social_connections (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_address            TEXT NOT NULL,
+    provider                 TEXT NOT NULL,
+    provider_user_id         TEXT NOT NULL,
+    username                 TEXT,
+    access_token_encrypted   TEXT,
+    refresh_token_encrypted  TEXT,
+    scopes                   TEXT DEFAULT '',
+    expires_at               TIMESTAMP,
+    status                   TEXT DEFAULT 'connected',
+    metadata_json            TEXT DEFAULT '{}',
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner_address, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_connections_owner
+ON social_connections(owner_address, provider);
+
+CREATE TABLE IF NOT EXISTS social_oauth_states (
+    state                    TEXT PRIMARY KEY,
+    owner_address            TEXT NOT NULL,
+    provider                 TEXT NOT NULL,
+    verifier_encrypted       TEXT,
+    redirect_path            TEXT DEFAULT '#/settings',
+    expires_at               TIMESTAMP NOT NULL,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS social_link_codes (
+    code                     TEXT PRIMARY KEY,
+    owner_address            TEXT NOT NULL,
+    provider                 TEXT NOT NULL,
+    asset_key                TEXT,
+    expires_at               TIMESTAMP NOT NULL,
+    used_at                  TIMESTAMP,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS social_communities (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_address            TEXT NOT NULL,
+    provider                 TEXT NOT NULL,
+    external_community_id    TEXT NOT NULL,
+    community_name           TEXT,
+    asset_key                TEXT,
+    permission_level         TEXT DEFAULT 'member',
+    status                   TEXT DEFAULT 'connected',
+    metadata_json            TEXT DEFAULT '{}',
+    last_sync_at             TIMESTAMP,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner_address, provider, external_community_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_communities_owner
+ON social_communities(owner_address, provider);
+
+-- asset_key uses chain:contract when possible and coingecko:<id> otherwise.
+CREATE TABLE IF NOT EXISTS social_assets (
+    asset_key                TEXT PRIMARY KEY,
+    coin_id                  TEXT,
+    name                     TEXT NOT NULL,
+    symbol                   TEXT,
+    chain                    TEXT DEFAULT 'unknown',
+    contract_address         TEXT,
+    image_url                TEXT,
+    market_cap               REAL,
+    volume_24h               REAL,
+    change_24h               REAL,
+    market_score             REAL DEFAULT 0,
+    priority_tier            INTEGER DEFAULT 3,
+    official_x               TEXT,
+    telegram_chat            TEXT,
+    metadata_json            TEXT DEFAULT '{}',
+    last_market_sync_at      TIMESTAMP,
+    updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_assets_priority
+ON social_assets(priority_tier, market_score DESC);
+
+CREATE TABLE IF NOT EXISTS social_metric_snapshots (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_key                TEXT NOT NULL,
+    provider                 TEXT NOT NULL,
+    source_mode              TEXT NOT NULL,
+    owner_address            TEXT,
+    community_id             INTEGER,
+    followers                INTEGER,
+    members                  INTEGER,
+    mentions_24h             INTEGER,
+    posts_24h                INTEGER,
+    active_authors_24h       INTEGER,
+    engagements_24h          INTEGER,
+    engagement_rate          REAL,
+    sentiment                REAL,
+    confidence               REAL DEFAULT 0,
+    raw_summary_json         TEXT DEFAULT '{}',
+    collected_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (asset_key) REFERENCES social_assets(asset_key) ON DELETE CASCADE,
+    FOREIGN KEY (community_id) REFERENCES social_communities(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_metrics_asset_time
+ON social_metric_snapshots(asset_key, provider, collected_at DESC);
+
+CREATE TABLE IF NOT EXISTS social_rag_documents (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_key                TEXT NOT NULL,
+    platform                 TEXT NOT NULL,
+    document_type            TEXT NOT NULL,
+    period_key               TEXT NOT NULL,
+    title                    TEXT NOT NULL,
+    content                  TEXT NOT NULL,
+    keywords_json            TEXT DEFAULT '[]',
+    confidence               REAL DEFAULT 0,
+    source_mode              TEXT NOT NULL,
+    owner_scope              TEXT NOT NULL DEFAULT 'shared',
+    owner_address            TEXT,
+    collected_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at               TIMESTAMP,
+    UNIQUE(asset_key, platform, document_type, period_key, owner_scope),
+    FOREIGN KEY (asset_key) REFERENCES social_assets(asset_key) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_rag_asset_time
+ON social_rag_documents(asset_key, collected_at DESC);
+
+CREATE TABLE IF NOT EXISTS social_sync_runs (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode                     TEXT NOT NULL,
+    provider                 TEXT,
+    asset_count              INTEGER DEFAULT 0,
+    success_count            INTEGER DEFAULT 0,
+    error_count              INTEGER DEFAULT 0,
+    status                   TEXT DEFAULT 'running',
+    details_json             TEXT DEFAULT '{}',
+    started_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at              TIMESTAMP
+);
+
 -- ============ 自选列表 ============
 
 CREATE TABLE IF NOT EXISTS watchlist (

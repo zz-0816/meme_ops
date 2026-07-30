@@ -681,6 +681,21 @@ body {
 .readonly-wallet { margin-top:18px; padding:12px; border:1px solid var(--border); border-radius:10px; }
 .readonly-wallet span { display:block; color:var(--text-muted); font-size:.75rem; }
 .readonly-wallet code { display:block; margin-top:4px; overflow-wrap:anywhere; color:var(--text); }
+.social-settings { margin-top:22px; padding-top:20px; border-top:1px solid var(--border); }
+.social-settings-heading { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; margin-bottom:12px; }
+.social-settings-heading p,.social-privacy-note { margin-top:4px; color:var(--text-muted); font-size:.72rem; line-height:1.45; }
+.private-pill { flex:0 0 auto; padding:4px 8px; border-radius:999px; background:rgba(0,230,118,.1); color:var(--green); font-size:.65rem; }
+.social-connection-card { display:flex; align-items:center; gap:12px; margin-top:9px; padding:13px; border:1px solid var(--border); border-radius:12px; background:var(--bg-input); }
+.social-provider-icon { display:flex; align-items:center; justify-content:center; flex:0 0 38px; height:38px; border-radius:50%; background:rgba(108,99,255,.16); color:var(--text); font-weight:800; }
+.social-provider-copy { min-width:0; display:flex; flex:1; flex-direction:column; gap:2px; }
+.social-provider-copy span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-size:.76rem; }
+.social-provider-copy small,.social-connection-loading,.social-connection-error { color:var(--text-muted); font-size:.68rem; }
+.social-connection-error { color:var(--red); }
+.social-card-actions { display:flex; gap:7px; }
+.social-connection-card button:disabled { opacity:.45; cursor:not-allowed; }
+.social-connection-card .danger-link { color:var(--red); }
+.social-login-dialog .quote-header p { margin-top:4px; color:var(--text-muted); font-size:.72rem; }
+#telegramWidgetMount { min-height:64px; display:flex; align-items:center; justify-content:center; padding:18px; }
 .settings-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
 .empty-state { padding:60px; text-align:center; color:var(--text-muted); }
 

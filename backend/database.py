@@ -63,6 +63,74 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE poster_nfts ADD COLUMN {column} TEXT")
         if "hidden" not in nft_columns:
             conn.execute("ALTER TABLE poster_nfts ADD COLUMN hidden INTEGER DEFAULT 0")
+        social_metric_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(social_metric_snapshots)"
+            ).fetchall()
+        }
+        if social_metric_columns and "owner_address" not in social_metric_columns:
+            conn.execute(
+                "ALTER TABLE social_metric_snapshots ADD COLUMN owner_address TEXT"
+            )
+        social_rag_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(social_rag_documents)"
+            ).fetchall()
+        }
+        # Early development builds used a four-column uniqueness constraint.
+        # Rebuild once so shared and wallet-private summaries can coexist.
+        if social_rag_columns and "owner_scope" not in social_rag_columns:
+            conn.execute("DROP INDEX IF EXISTS idx_social_rag_asset_time")
+            conn.execute(
+                "ALTER TABLE social_rag_documents RENAME TO social_rag_documents_legacy"
+            )
+            conn.execute(
+                """CREATE TABLE social_rag_documents (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    asset_key      TEXT NOT NULL,
+                    platform       TEXT NOT NULL,
+                    document_type  TEXT NOT NULL,
+                    period_key     TEXT NOT NULL,
+                    title          TEXT NOT NULL,
+                    content        TEXT NOT NULL,
+                    keywords_json  TEXT DEFAULT '[]',
+                    confidence     REAL DEFAULT 0,
+                    source_mode    TEXT NOT NULL,
+                    owner_scope    TEXT NOT NULL DEFAULT 'shared',
+                    owner_address  TEXT,
+                    collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at     TIMESTAMP,
+                    UNIQUE(asset_key, platform, document_type, period_key, owner_scope),
+                    FOREIGN KEY (asset_key) REFERENCES social_assets(asset_key) ON DELETE CASCADE
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO social_rag_documents
+                   (id, asset_key, platform, document_type, period_key, title,
+                    content, keywords_json, confidence, source_mode,
+                    owner_scope, owner_address, collected_at, expires_at)
+                   SELECT id, asset_key, platform, document_type, period_key,
+                          title, content, keywords_json, confidence, source_mode,
+                          'shared', NULL, collected_at, expires_at
+                   FROM social_rag_documents_legacy"""
+            )
+            conn.execute("DROP TABLE social_rag_documents_legacy")
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_social_rag_asset_time
+                   ON social_rag_documents(asset_key, collected_at DESC)"""
+            )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_social_metrics_owner_time
+               ON social_metric_snapshots(
+                   asset_key, owner_address, provider, collected_at DESC
+               )"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_social_rag_owner_time
+               ON social_rag_documents(asset_key, owner_address, collected_at DESC)"""
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_analysis_owner ON analysis_records(owner_address)"
         )
