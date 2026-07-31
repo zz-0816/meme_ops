@@ -9,6 +9,7 @@ import time
 import asyncio
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -83,6 +84,9 @@ agent = MemeOpsAgent()
 _top_memes_cache = {"expires": 0.0, "items": []}
 _watchlist_market_cache = {}
 _poster_draft_cache = {}
+_analysis_jobs: dict[str, dict] = {}
+_analysis_job_tasks: dict[str, asyncio.Task] = {}
+_ANALYSIS_JOB_TTL_SECONDS = 60 * 60
 
 
 @app.on_event("startup")
@@ -193,8 +197,13 @@ async def api_analysis_provider_status():
 # ============ Social connections and intelligence ============
 
 @app.get("/api/social/provider")
-async def api_social_provider_status():
-    return social_provider_status()
+async def api_social_provider_status(request: Request):
+    status = social_provider_status()
+    status["public_app_url"] = (
+        os.getenv("APP_PUBLIC_URL", "").strip()
+        or str(request.base_url).rstrip("/")
+    )
+    return status
 
 
 @app.get("/api/social/connections")
@@ -203,19 +212,21 @@ async def api_social_connections(user=Depends(get_current_user)):
 
 
 @app.post("/api/social/x/connect")
-async def api_connect_x(user=Depends(get_current_user)):
+async def api_connect_x(request: Request, user=Depends(get_current_user)):
     try:
-        return begin_x_connection(user)
+        return begin_x_connection(user, str(request.base_url))
     except SocialConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/social/x/callback")
-async def api_x_callback(code: str = "", state: str = "", error: str = ""):
+async def api_x_callback(
+    request: Request, code: str = "", state: str = "", error: str = "",
+):
     if error:
         return RedirectResponse(url=f"/?social=x&status=cancelled&reason={error}#/settings")
     try:
-        result = await complete_x_connection(code, state)
+        result = await complete_x_connection(code, state, str(request.base_url))
         return RedirectResponse(
             url=f"/?social=x&status=connected{result['redirect_path']}"
         )
@@ -225,9 +236,9 @@ async def api_x_callback(code: str = "", state: str = "", error: str = ""):
 
 
 @app.post("/api/social/telegram/connect")
-async def api_connect_telegram(user=Depends(get_current_user)):
+async def api_connect_telegram(request: Request, user=Depends(get_current_user)):
     try:
-        return begin_telegram_connection(user)
+        return begin_telegram_connection(user, str(request.base_url))
     except SocialConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -377,7 +388,160 @@ async def analyze(req: AnalyzeRequest, user=Depends(get_current_user)):
     # 同步生成三张海报图
     from charts import generate_all_charts
     charts = generate_all_charts(report)
-    return {"analysis_id": analysis_id, "report": report, "charts": charts}
+    return {
+        "analysis_id": analysis_id,
+        "report": report,
+        "charts": charts,
+        "source_request": req.model_dump(),
+    }
+
+
+def _prune_analysis_jobs() -> None:
+    cutoff = time.time() - _ANALYSIS_JOB_TTL_SECONDS
+    expired = [
+        job_id for job_id, job in _analysis_jobs.items()
+        if job.get("updated_at", job.get("created_at", 0)) < cutoff
+        and job.get("status") in {"completed", "failed", "cancelled"}
+    ]
+    for job_id in expired:
+        _analysis_jobs.pop(job_id, None)
+        _analysis_job_tasks.pop(job_id, None)
+
+
+def _public_analysis_job(job: dict) -> dict:
+    payload = {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "progress": job.get("progress", 0),
+        "stage": job.get("stage", "Queued"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "source_request": job.get("source_request"),
+    }
+    if job.get("status") == "completed":
+        payload["result"] = job.get("result")
+    elif job.get("status") == "failed":
+        payload["error"] = job.get("error") or "Analysis failed"
+    return payload
+
+
+def _get_owned_analysis_job(job_id: str, user: str) -> dict:
+    job = _analysis_jobs.get(job_id)
+    if not job or job.get("owner_address") != user.lower():
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+    return job
+
+
+async def _run_analysis_job(job_id: str, req: AnalyzeRequest, user: str) -> None:
+    job = _analysis_jobs[job_id]
+
+    def update(progress: int, stage: str) -> None:
+        job.update({
+            "progress": max(0, min(int(progress), 100)),
+            "stage": stage,
+            "updated_at": time.time(),
+        })
+
+    try:
+        job["status"] = "running"
+        update(8, "Resolving the exact asset and chain")
+        worker_agent = MemeOpsAgent()
+        worker_agent.set_persona(req.persona)
+        report = await worker_agent.analyze(
+            req.prompt,
+            req.report_style,
+            owner_address=user,
+            progress_callback=update,
+        )
+        update(78, "Saving the wallet-private report")
+
+        import re
+        chain_aliases = {
+            "sol": "solana", "solana": "solana", "eth": "ethereum",
+            "ethereum": "ethereum", "bsc": "bsc", "binance": "bsc",
+            "ton": "ton", "monad": "monad",
+        }
+        for alias, chain_id in chain_aliases.items():
+            if re.search(rf"\b{alias}\b", req.prompt, re.IGNORECASE):
+                report.setdefault("token", {})["chain"] = chain_id
+                break
+        resolved_chain = req.chain or report.get("token", {}).get("chain") or "unknown"
+        analysis_id = save_analysis(
+            token_name=req.token_name or report["token"]["name"],
+            prompt=req.prompt,
+            report=report,
+            overall_score=report["overall_score"],
+            risk_level=report["risk_level"],
+            persona=req.persona,
+            contract_addr=req.contract_addr,
+            chain=resolved_chain,
+            owner_address=user,
+            report_style=req.report_style,
+        )
+
+        update(84, "Rendering three high-resolution charts")
+        from charts import generate_all_charts
+        charts = await asyncio.to_thread(generate_all_charts, report)
+        update(98, "Preparing the report workspace")
+        job["result"] = {
+            "analysis_id": analysis_id,
+            "report": report,
+            "charts": charts,
+            "source_request": req.model_dump(),
+        }
+        job["status"] = "completed"
+        update(100, "Report ready")
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
+        update(job.get("progress", 0), "Analysis stopped")
+    except Exception as error:
+        job["status"] = "failed"
+        job["error"] = str(error)[:500]
+        update(job.get("progress", 0), "Analysis failed")
+    finally:
+        _analysis_job_tasks.pop(job_id, None)
+
+
+@app.post("/api/analysis/jobs", status_code=202)
+async def create_analysis_job(req: AnalyzeRequest, user=Depends(get_current_user)):
+    """Start a cancellable analysis without blocking navigation in the client."""
+    _prune_analysis_jobs()
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    _analysis_jobs[job_id] = {
+        "job_id": job_id,
+        "owner_address": user.lower(),
+        "status": "queued",
+        "progress": 0,
+        "stage": "Queued",
+        "source_request": req.model_dump(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    _analysis_job_tasks[job_id] = asyncio.create_task(
+        _run_analysis_job(job_id, req, user)
+    )
+    return _public_analysis_job(_analysis_jobs[job_id])
+
+
+@app.get("/api/analysis/jobs/{job_id}")
+async def analysis_job_status(job_id: str, user=Depends(get_current_user)):
+    _prune_analysis_jobs()
+    return _public_analysis_job(_get_owned_analysis_job(job_id, user))
+
+
+@app.delete("/api/analysis/jobs/{job_id}")
+async def cancel_analysis_job(job_id: str, user=Depends(get_current_user)):
+    job = _get_owned_analysis_job(job_id, user)
+    if job["status"] in {"completed", "failed", "cancelled"}:
+        return _public_analysis_job(job)
+    job["status"] = "cancelling"
+    job["stage"] = "Stopping safely"
+    job["updated_at"] = time.time()
+    task = _analysis_job_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    return _public_analysis_job(job)
 
 
 @app.get("/api/history")

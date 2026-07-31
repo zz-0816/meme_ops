@@ -17,7 +17,10 @@
         <button class="topnav-tab" data-tab="analysis" onclick="switchTab('analysis')">Analyze</button>
         <button class="topnav-tab" data-tab="profile" onclick="switchTab('profile')">Home</button>
     </div>
-    <div class="topnav-wallet">
+    <div class="topnav-wallet" id="topnavConnections">
+        <button class="connection-status-icon wallet-status-icon is-disconnected" id="walletStatusIcon" onclick="handleWalletStatusClick()" title="Connect wallet" aria-label="Wallet connection"></button>
+        <button class="connection-status-icon social-status-icon is-disconnected" id="xStatusIcon" onclick="openSocialBinding('x')" title="Connect X" aria-label="X connection"></button>
+        <button class="connection-status-icon social-status-icon is-disconnected" id="telegramStatusIcon" onclick="openSocialBinding('telegram')" title="Connect Telegram" aria-label="Telegram connection"></button>
         <span class="wallet-addr" id="walletAddr" style="display:none;"></span>
         <button class="btn-wallet" id="btnWallet" onclick="connectWallet()">Connect Wallet</button>
     </div>
@@ -43,6 +46,8 @@
     <div class="spinner"></div>
     <p style="margin-top:16px;color:var(--text-muted);">Processing...</p>
 </div>
+
+<div class="analysis-job-dock hidden" id="analysisJobDock" aria-live="polite"></div>
 
 <script src="app.js"></script>
 </body>

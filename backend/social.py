@@ -183,11 +183,14 @@ def _consume_oauth_state(state: str, provider: str) -> dict:
         conn.close()
 
 
-def _public_app_url() -> str:
-    return os.getenv("APP_PUBLIC_URL", "http://127.0.0.1:8788").rstrip("/")
+def _public_app_url(request_base_url: str | None = None) -> str:
+    configured = os.getenv("APP_PUBLIC_URL", "").strip()
+    return (configured or request_base_url or "http://127.0.0.1:8788").rstrip("/")
 
 
-def begin_x_connection(owner_address: str) -> dict:
+def begin_x_connection(
+    owner_address: str, request_base_url: str | None = None,
+) -> dict:
     client_id = os.getenv("X_CLIENT_ID", "").strip()
     if not client_id:
         raise SocialConfigurationError("X_CLIENT_ID is not configured")
@@ -196,7 +199,7 @@ def begin_x_connection(owner_address: str) -> dict:
         hashlib.sha256(verifier.encode("ascii")).digest()
     ).decode("ascii").rstrip("=")
     state = _save_oauth_state(owner_address, "x", verifier)
-    callback = f"{_public_app_url()}/api/social/x/callback"
+    callback = f"{_public_app_url(request_base_url)}/api/social/x/callback"
     params = {
         "response_type": "code",
         "client_id": client_id,
@@ -255,11 +258,13 @@ def _upsert_connection(
         conn.close()
 
 
-async def complete_x_connection(code: str, state: str) -> dict:
+async def complete_x_connection(
+    code: str, state: str, request_base_url: str | None = None,
+) -> dict:
     pending = _consume_oauth_state(state, "x")
     client_id = os.getenv("X_CLIENT_ID", "").strip()
     client_secret = os.getenv("X_CLIENT_SECRET", "").strip()
-    callback = f"{_public_app_url()}/api/social/x/callback"
+    callback = f"{_public_app_url(request_base_url)}/api/social/x/callback"
     data = {
         "code": code,
         "grant_type": "authorization_code",
@@ -299,7 +304,9 @@ async def complete_x_connection(code: str, state: str) -> dict:
     return {"owner_address": pending["owner_address"], "redirect_path": pending["redirect_path"]}
 
 
-def begin_telegram_connection(owner_address: str) -> dict:
+def begin_telegram_connection(
+    owner_address: str, request_base_url: str | None = None,
+) -> dict:
     username = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
     if not username or not os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
         raise SocialConfigurationError(
@@ -308,7 +315,7 @@ def begin_telegram_connection(owner_address: str) -> dict:
     state = _save_oauth_state(owner_address, "telegram")
     return {
         "bot_username": username,
-        "callback_url": f"{_public_app_url()}/api/social/telegram/callback?state={state}",
+        "callback_url": f"{_public_app_url(request_base_url)}/api/social/telegram/callback?state={state}",
         "state": state,
     }
 

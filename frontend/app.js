@@ -32,6 +32,13 @@ let state = {
     profileSection: 'posts',
     feedMode: localStorage.getItem('meme_ops_feed_mode') || 'recommended',
     posterDrafts: {},
+    analysisJobs: new Map(),
+    reportRequests: {},
+    socialConnections: {},
+    analysisDraft: (() => {
+        try { return JSON.parse(localStorage.getItem('meme_ops_analysis_draft')) || {prompt:'', reportStyle:''}; }
+        catch (error) { return {prompt:'', reportStyle:''}; }
+    })(),
 };
 
 // ============ 初始化 ============
@@ -44,9 +51,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.token && state.address) {
         document.getElementById('btnWallet').textContent = 'Connected';
         document.getElementById('btnWallet').classList.add('connected');
-        document.getElementById('walletAddr').style.display = 'inline';
-        document.getElementById('walletAddr').textContent = shortenAddr(state.address);
     }
+    updateTopConnectionStatus();
+    restoreAnalysisJobs();
+    handleSocialReturn();
     window.addEventListener('hashchange', routeFromHash);
     routeFromHash();
 });
@@ -96,11 +104,16 @@ async function connectWallet() {
         state.address = address;
         localStorage.setItem('meme_ops_token', token);
         localStorage.setItem('meme_ops_address', address);
+        const connectedProvider = (window.ethereum?.providers || [window.ethereum]).find(
+            item => String(item?.selectedAddress || '').toLowerCase() === address.toLowerCase()
+        );
+        if (connectedProvider?.isOkxWallet || connectedProvider?.isOKExWallet) localStorage.setItem('meme_ops_wallet_provider', 'okx');
+        else if (connectedProvider?.isBinance || connectedProvider?.isBinanceChain) localStorage.setItem('meme_ops_wallet_provider', 'binance');
+        else if (connectedProvider?.isMetaMask) localStorage.setItem('meme_ops_wallet_provider', 'metamask');
 
         document.getElementById('btnWallet').textContent = 'Connected';
         document.getElementById('btnWallet').classList.add('connected');
-        document.getElementById('walletAddr').style.display = 'inline';
-        document.getElementById('walletAddr').textContent = shortenAddr(address);
+        await updateTopConnectionStatus();
 
         routeFromHash();
     } catch (err) {
@@ -115,10 +128,132 @@ function logout() {
     state.address = null;
     localStorage.removeItem('meme_ops_token');
     localStorage.removeItem('meme_ops_address');
+    localStorage.removeItem('meme_ops_wallet_provider');
     document.getElementById('btnWallet').textContent = 'Connect Wallet';
     document.getElementById('btnWallet').classList.remove('connected');
     document.getElementById('walletAddr').style.display = 'none';
+    state.analysisJobs.clear();
+    state.socialConnections = {};
+    localStorage.removeItem('meme_ops_analysis_jobs');
+    updateTopConnectionStatus();
     switchTab('overview');
+}
+
+function injectedWalletInfo() {
+    const remembered = localStorage.getItem('meme_ops_wallet_provider');
+    if (remembered === 'okx') return {key:'okx', label:'OKX Wallet'};
+    if (remembered === 'binance') return {key:'binance', label:'Binance Wallet'};
+    if (remembered === 'metamask') return {key:'metamask', label:'MetaMask'};
+    const candidates = window.ethereum?.providers?.length
+        ? window.ethereum.providers
+        : (window.ethereum ? [window.ethereum] : []);
+    const provider = candidates.find(item => item.isOkxWallet || item.isOKExWallet)
+        || candidates.find(item => item.isBinance || item.isBinanceChain)
+        || candidates.find(item => item.isMetaMask)
+        || candidates[0];
+    if (provider?.isOkxWallet || provider?.isOKExWallet) return {key:'okx', label:'OKX Wallet'};
+    if (provider?.isBinance || provider?.isBinanceChain) return {key:'binance', label:'Binance Wallet'};
+    if (provider?.isMetaMask) return {key:'metamask', label:'MetaMask'};
+    return {key:'wallet', label:'Web3 Wallet'};
+}
+
+function walletProviderLogo(provider) {
+    if (provider === 'okx') {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h6v6H3V3Zm6 6h6v6H9V9Zm6-6h6v6h-6V3ZM3 15h6v6H3v-6Zm12 0h6v6h-6v-6Z"/></svg>`;
+    }
+    if (provider === 'binance') {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.8 3.2 3.2L12 9.2 8.8 6 12 2.8Zm5.4 5.4 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2Zm-10.8 0 3.2 3.2-3.2 3.2-3.2-3.2 3.2-3.2ZM12 13.6l3.2 3.2L12 20l-3.2-3.2 3.2-3.2Zm0-6.2 4 4-4 4-4-4 4-4Z"/></svg>`;
+    }
+    if (provider === 'metamask') {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.8 3-7.5 5.6 1.4-3.3L20.8 3ZM3.2 3l7.4 5.7-1.3-3.4L3.2 3Zm14.9 12.8-2 3.1 4.3 1.2 1.2-4.2-3.5-.1ZM2.4 15.9l1.2 4.2 4.3-1.2-2-3.1-3.5.1Zm5.2-5.2-1.2 1.8 4.2.2-.1-4.5-2.9 2.5Zm8.8 0-3-2.5-.1 4.5 4.2-.2-1.1-1.8Zm-8.5 8.2 2.6-1.3-2.2-1.7-.4 3Zm5.6-1.3 2.6 1.3-.4-3-2.2 1.7Zm-3 0 .1-2.6-2.2.7 2.1 1.9Zm3 0 2.1-1.9-2.2-.7.1 2.6Zm-2.9-4.9-4.2-.2 1.9 3.4 2.2-.7.1-2.5Zm6.9-.2-4.2.2.1 2.5 2.2.7 1.9-3.4Zm-7 5.1-2.6 1.3 2.1 1.6-.1-1.1.6-1.8Zm3 0 .6 1.8-.1 1.1 2.1-1.6-2.6-1.3Zm.6 3-2.1.6-2.1-.6.2 1.7h3.8l.2-1.7Z"/></svg>`;
+    }
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h12A2.5 2.5 0 0 1 20 6.5V8h1v9.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-11ZM18 8V6.5a.5.5 0 0 0-.5-.5h-12a.5.5 0 0 0 0 1H18v1Zm-2 4v4h5v-4h-5Zm2 1h1v2h-1v-2Z"/></svg>`;
+}
+
+function socialStatusLogo(provider) {
+    if (provider === 'x') {
+        return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.657l-5.214-6.817-5.967 6.817H1.68l7.73-8.835L1.254 2.25h6.826l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z"/></svg>`;
+    }
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.94 4.67 18.9 19.01c-.23 1.01-.83 1.26-1.68.78l-4.63-3.41-2.23 2.15c-.25.25-.46.46-.94.46l.33-4.72 8.59-7.76c.37-.33-.08-.52-.58-.19L7.14 13.01l-4.57-1.43c-.99-.31-1.01-.99.21-1.47L20.65 3.2c.83-.3 1.55.2 1.29 1.47Z"/></svg>`;
+}
+
+async function updateTopConnectionStatus() {
+    const wallet = document.getElementById('walletStatusIcon');
+    const xIcon = document.getElementById('xStatusIcon');
+    const telegramIcon = document.getElementById('telegramStatusIcon');
+    const button = document.getElementById('btnWallet');
+    if (!wallet || !xIcon || !telegramIcon || !button) return;
+    const walletInfo = injectedWalletInfo();
+    wallet.innerHTML = walletProviderLogo(walletInfo.key);
+    wallet.dataset.provider = walletInfo.key;
+    wallet.classList.toggle('is-connected', Boolean(state.address));
+    wallet.classList.toggle('is-disconnected', !state.address);
+    wallet.title = state.address
+        ? `${walletInfo.label} · ${shortenAddr(state.address)}`
+        : `Connect ${walletInfo.label}`;
+    button.style.display = state.address ? 'none' : '';
+    xIcon.innerHTML = socialStatusLogo('x');
+    telegramIcon.innerHTML = socialStatusLogo('telegram');
+    for (const icon of [xIcon, telegramIcon]) {
+        icon.classList.remove('is-connected');
+        icon.classList.add('is-disconnected');
+    }
+    if (!state.token) return;
+    try {
+        const response = await fetch(`${API_BASE}/api/social/connections`, {headers:apiHeaders()});
+        if (!response.ok) return;
+        const data = await response.json();
+        state.socialConnections = Object.fromEntries(
+            (data.connections || []).map(item => [item.provider, item])
+        );
+        const xConnected = Boolean(state.socialConnections.x);
+        const telegramConnected = Boolean(state.socialConnections.telegram);
+        xIcon.classList.toggle('is-connected', xConnected);
+        xIcon.classList.toggle('is-disconnected', !xConnected);
+        telegramIcon.classList.toggle('is-connected', telegramConnected);
+        telegramIcon.classList.toggle('is-disconnected', !telegramConnected);
+        xIcon.title = xConnected ? `X · @${state.socialConnections.x.username || 'connected'}` : 'X is not connected';
+        telegramIcon.title = telegramConnected ? `Telegram · @${state.socialConnections.telegram.username || 'connected'}` : 'Telegram is not connected';
+    } catch (error) { /* status icons stay dimmed */ }
+}
+
+function handleWalletStatusClick() {
+    if (!state.address) return connectWallet();
+    document.getElementById('walletConnectionPopover')?.remove();
+    const walletInfo = injectedWalletInfo();
+    const popover = document.createElement('div');
+    popover.id = 'walletConnectionPopover';
+    popover.className = 'connection-popover';
+    popover.innerHTML = `<strong>${escapeHtml(walletInfo.label)}</strong><code>${escapeHtml(shortenAddr(state.address))}</code><button class="btn-small danger-link" onclick="logout();document.getElementById('walletConnectionPopover')?.remove()">Disconnect</button>`;
+    document.getElementById('topnavConnections').appendChild(popover);
+    setTimeout(() => document.addEventListener('click', event => {
+        if (!popover.contains(event.target) && event.target.id !== 'walletStatusIcon') popover.remove();
+    }, {once:true}), 0);
+}
+
+function openSocialBinding(provider) {
+    if (!state.token) return connectWallet();
+    location.hash = '#/settings';
+    setTimeout(() => {
+        document.querySelector(`.social-connection-card[data-provider="${provider}"]`)?.scrollIntoView({behavior:'smooth', block:'center'});
+    }, 120);
+}
+
+function handleSocialReturn() {
+    const url = new URL(window.location.href);
+    const provider = url.searchParams.get('social');
+    const status = url.searchParams.get('status');
+    if (!provider || !status) return;
+    const reason = url.searchParams.get('reason');
+    setTimeout(() => {
+        if (status === 'connected') showToast(`${provider === 'x' ? 'X' : 'Telegram'} connected successfully.`);
+        else alert(`${provider === 'x' ? 'X' : 'Telegram'} connection ${status}: ${reason || 'authorization was not completed'}`);
+        updateTopConnectionStatus();
+    }, 150);
+    url.searchParams.delete('social');
+    url.searchParams.delete('status');
+    url.searchParams.delete('reason');
+    history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
 // ============ Tab 切换 ============
@@ -1285,12 +1420,12 @@ function renderAnalysisShell() {
             </div>
             <div class="input-section">
                 <div class="input-group">
-                    <input id="analysisInput" ${state.token ? '' : 'disabled'} placeholder="${state.token ? 'Meme name or name + chain (example: DOGE Solana)' : 'Connect a wallet to unlock private analysis'}" onkeydown="if(event.key==='Enter')submitAnalysis()" />
+                    <input id="analysisInput" ${state.token ? '' : 'disabled'} value="${escapeHtml(state.analysisDraft.prompt || '')}" placeholder="${state.token ? 'Meme name or name + chain (example: DOGE Solana)' : 'Connect a wallet to unlock private analysis'}" oninput="saveAnalysisDraft()" onkeydown="if(event.key==='Enter')submitAnalysis()" />
                     <button class="btn btn-primary" id="analysisBtn" onclick="${state.token ? 'submitAnalysis()' : 'connectWallet()'}">${state.token ? 'Analyze' : 'Connect wallet'}</button>
                 </div>
                 <label class="report-style-field" for="reportStyleInput">
                     <span>Report writing direction <small>optional</small></span>
-                    <textarea id="reportStyleInput" ${state.token ? '' : 'disabled'} maxlength="500" placeholder="Example: friendly and concise, or academic with methodology and limitations"></textarea>
+                    <textarea id="reportStyleInput" ${state.token ? '' : 'disabled'} maxlength="500" oninput="saveAnalysisDraft()" placeholder="Example: friendly and concise, or academic with methodology and limitations">${escapeHtml(state.analysisDraft.reportStyle || '')}</textarea>
                 </label>
             </div>
             <p class="analysis-hint">${state.token ? 'Short example: pepe sol. Click a Top 10 asset to analyze it from the selected perspective. Use + to add it to your comparison list.' : 'Rankings are public. Reports, learned modules, history, and comparisons unlock after wallet authentication.'}</p>
@@ -1299,6 +1434,15 @@ function renderAnalysisShell() {
     `;
     document.getElementById('personaSelect').value = state.currentPersona;
     renderSidebar();
+    renderAnalysisJobDock();
+}
+
+function saveAnalysisDraft() {
+    state.analysisDraft = {
+        prompt: document.getElementById('analysisInput')?.value || state.analysisDraft.prompt || '',
+        reportStyle: document.getElementById('reportStyleInput')?.value || state.analysisDraft.reportStyle || '',
+    };
+    localStorage.setItem('meme_ops_analysis_draft', JSON.stringify(state.analysisDraft));
 }
 
 function ensureAnalysisResults() {
@@ -1403,37 +1547,187 @@ function formatPrice(value) {
 }
 
 async function submitAnalysis() {
-    const prompt = document.getElementById('analysisInput').value.trim();
+    const prompt = document.getElementById('analysisInput')?.value.trim();
     const reportStyle = document.getElementById('reportStyleInput')?.value.trim() || null;
     if (!prompt) return;
     if (!state.token) return alert('Connect your wallet before running a private analysis.');
+    state.analysisDraft = {prompt, reportStyle: reportStyle || ''};
+    localStorage.setItem('meme_ops_analysis_draft', JSON.stringify(state.analysisDraft));
+    await startAnalysisJob({
+        prompt,
+        persona: state.currentPersona,
+        report_style: reportStyle,
+    });
+}
 
+function persistAnalysisJobs() {
+    localStorage.setItem(
+        'meme_ops_analysis_jobs',
+        JSON.stringify([...state.analysisJobs.keys()])
+    );
+}
+
+function restoreAnalysisJobs() {
+    if (!state.token) return;
+    let ids = [];
+    try { ids = JSON.parse(localStorage.getItem('meme_ops_analysis_jobs') || '[]'); }
+    catch (error) { ids = []; }
+    ids.slice(0, 5).forEach(jobId => {
+        state.analysisJobs.set(jobId, {
+            job_id: jobId, status: 'loading', progress: 0, stage: 'Restoring analysis',
+        });
+        pollAnalysisJob(jobId);
+    });
+    renderAnalysisJobDock();
+}
+
+async function startAnalysisJob(request, options = {}) {
     const btn = document.getElementById('analysisBtn');
-    btn.disabled = true;
-    showLoading(true);
-
+    if (btn) btn.disabled = true;
     try {
-        const resp = await fetch(`${API_BASE}/api/analyze`, {
+        const response = await fetch(`${API_BASE}/api/analysis/jobs`, {
             method: 'POST',
             headers: apiHeaders(true),
-            body: JSON.stringify({
-                prompt,
-                persona: state.currentPersona,
-                report_style: reportStyle,
-            }),
+            body: JSON.stringify(request),
         });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-        ensureAnalysisResults().innerHTML = '';
-        renderAnalysisResult(data);
-        document.getElementById('analysisInput').value = '';
-        renderSidebar(); // 刷新历史
-    } catch (err) {
-        alert('Analysis failed: ' + err.message);
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.detail || 'Unable to start analysis');
+        job.auto_open = state.currentTab === 'analysis';
+        job.switching_from = options.switchingFrom || null;
+        state.analysisJobs.set(job.job_id, job);
+        persistAnalysisJobs();
+        renderAnalysisJobDock();
+        renderInlineAnalysisProgress(job);
+        showToast(options.switchingFrom
+            ? `Generating the ${personaLabel(request.persona)} perspective in the background.`
+            : 'Analysis started. You can continue using other pages.');
+        pollAnalysisJob(job.job_id);
+        return job.job_id;
+    } catch (error) {
+        alert('Analysis failed: ' + error.message);
+        return null;
     } finally {
-        btn.disabled = false;
-        showLoading(false);
+        if (btn) btn.disabled = false;
     }
+}
+
+async function pollAnalysisJob(jobId) {
+    if (!state.token || !state.analysisJobs.has(jobId)) return;
+    try {
+        const response = await fetch(`${API_BASE}/api/analysis/jobs/${jobId}`, {
+            headers: apiHeaders(),
+        });
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.detail || 'Analysis job is unavailable');
+        const previous = state.analysisJobs.get(jobId) || {};
+        Object.assign(job, {
+            auto_open: previous.auto_open,
+            switching_from: previous.switching_from,
+        });
+        state.analysisJobs.set(jobId, job);
+        renderAnalysisJobDock();
+        renderInlineAnalysisProgress(job);
+        if (['queued', 'running', 'cancelling', 'loading'].includes(job.status)) {
+            setTimeout(() => pollAnalysisJob(jobId), 1100);
+            return;
+        }
+        if (job.status === 'completed') {
+            if (state.currentTab === 'analysis' && job.auto_open !== false) {
+                showCompletedAnalysisJob(jobId);
+            } else {
+                showToast('Your analysis report is ready. Select View report when convenient.');
+            }
+            return;
+        }
+        if (job.status === 'failed') showToast(job.error || 'Analysis failed.');
+        if (job.status === 'cancelled') setTimeout(() => dismissAnalysisJob(jobId), 1800);
+    } catch (error) {
+        const job = state.analysisJobs.get(jobId);
+        if (job) {
+            job.status = 'failed';
+            job.stage = error.message;
+            renderAnalysisJobDock();
+            renderInlineAnalysisProgress(job);
+        }
+    }
+}
+
+function renderInlineAnalysisProgress(job) {
+    if (state.currentTab !== 'analysis') return;
+    const results = document.getElementById('analysisResults');
+    if (!results || job.status === 'completed') return;
+    let card = document.getElementById(`analysis-job-card-${job.job_id}`);
+    if (!card) {
+        results.insertAdjacentHTML('afterbegin', `<section class="analysis-job-card" id="analysis-job-card-${job.job_id}"></section>`);
+        card = document.getElementById(`analysis-job-card-${job.job_id}`);
+    }
+    const terminal = ['failed', 'cancelled'].includes(job.status);
+    card.innerHTML = `
+        <div><span class="eyebrow">BACKGROUND ANALYSIS</span><strong>${escapeHtml(job.stage || 'Working')}</strong></div>
+        <div class="analysis-job-progress"><i style="width:${Number(job.progress || 0)}%"></i></div>
+        <span>${Number(job.progress || 0)}%</span>
+        ${terminal
+            ? `<button class="btn-small" onclick="dismissAnalysisJob('${job.job_id}')">Dismiss</button>`
+            : `<button class="btn-small danger-link" onclick="cancelAnalysisJob('${job.job_id}')">Stop</button>`}`;
+}
+
+function renderAnalysisJobDock() {
+    const dock = document.getElementById('analysisJobDock');
+    if (!dock) return;
+    const jobs = [...state.analysisJobs.values()];
+    dock.classList.toggle('hidden', jobs.length === 0);
+    dock.innerHTML = jobs.map(job => {
+        const complete = job.status === 'completed';
+        const terminal = ['failed', 'cancelled'].includes(job.status);
+        return `<article class="analysis-job-dock-item ${complete ? 'is-ready' : ''}">
+            <div><strong>${complete ? 'Report ready' : escapeHtml(job.stage || 'Analysis')}</strong><span>${complete ? personaLabel(job.source_request?.persona) : `${Number(job.progress || 0)}%`}</span></div>
+            <div class="analysis-job-progress"><i style="width:${Number(job.progress || 0)}%"></i></div>
+            ${complete
+                ? `<button onclick="showCompletedAnalysisJob('${job.job_id}')">View report</button>`
+                : terminal
+                    ? `<button onclick="dismissAnalysisJob('${job.job_id}')">Dismiss</button>`
+                    : `<button class="danger-link" onclick="cancelAnalysisJob('${job.job_id}')">Stop</button>`}
+        </article>`;
+    }).join('');
+}
+
+async function cancelAnalysisJob(jobId) {
+    const job = state.analysisJobs.get(jobId);
+    if (job) {
+        job.status = 'cancelling';
+        job.stage = 'Stopping safely';
+        renderAnalysisJobDock();
+        renderInlineAnalysisProgress(job);
+    }
+    try {
+        await fetch(`${API_BASE}/api/analysis/jobs/${jobId}`, {
+            method: 'DELETE', headers: apiHeaders(),
+        });
+        setTimeout(() => pollAnalysisJob(jobId), 250);
+    } catch (error) {
+        showToast('Unable to stop this analysis.');
+    }
+}
+
+function dismissAnalysisJob(jobId) {
+    state.analysisJobs.delete(jobId);
+    document.getElementById(`analysis-job-card-${jobId}`)?.remove();
+    persistAnalysisJobs();
+    renderAnalysisJobDock();
+}
+
+function showCompletedAnalysisJob(jobId) {
+    const job = state.analysisJobs.get(jobId);
+    if (!job?.result) return pollAnalysisJob(jobId);
+    state.currentTab = 'analysis';
+    setActiveNav('analysis');
+    document.getElementById('sidebar').classList.add('visible');
+    if (location.hash !== '#/analysis') history.pushState(null, '', '#/analysis');
+    if (!document.getElementById('analysisResults')) renderAnalysisShell();
+    ensureAnalysisResults().innerHTML = '';
+    renderAnalysisResult(job.result);
+    dismissAnalysisJob(jobId);
+    renderSidebar();
 }
 
 function renderAnalysisResult(data) {
@@ -1442,6 +1736,15 @@ function renderAnalysisResult(data) {
     const token = report.token || {};
     const analysisId = data.analysis_id ?? data.id;
     const contractAddress = token.contract_addr || data.contract_addr || '';
+    const sourceRequest = data.source_request || {
+        prompt: data.prompt || token.raw_prompt || `${token.name || ''} ${token.chain || data.chain || ''}`.trim(),
+        persona: report.persona || data.persona || state.currentPersona,
+        report_style: data.report_style || report.request_intent?.style_instruction || null,
+        token_name: data.token_name || token.name || null,
+        contract_addr: contractAddress || null,
+        chain: data.chain || token.chain || null,
+    };
+    state.reportRequests[analysisId] = sourceRequest;
     const container = ensureWorkspaceResults();
     const generationMode = report.generation_mode === 'deepseek'
         ? `${escapeHtml(report.generation_model || 'DeepSeek')} analysis`
@@ -1492,7 +1795,7 @@ function renderAnalysisResult(data) {
                 ${chartKeys.map((k, i) => charts[k]
                     ? `<div style="flex:1;min-width:200px;text-align:center;">
                         <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;color:var(--text);">${labels[i]}</div>
-                        <img src="${charts[k]}" style="width:100%;border-radius:8px;" alt="${labels[i]}" />
+                        <img class="clickable-report-chart" src="${charts[k]}" onclick="openImageViewer(this.src,this.alt)" style="width:100%;border-radius:8px;" alt="${labels[i]}" title="Click to enlarge" />
                     </div>`
                     : '').join('')}
             </div>
@@ -1512,6 +1815,16 @@ function renderAnalysisResult(data) {
                 <button class="btn btn-primary" onclick="mintPoster(${analysisId})">Mint Poster NFT · Pay Gas in Wallet</button>
             </div>
         </div>`;
+    const reportPersona = report.persona || sourceRequest.persona || 'operator';
+    const perspectiveSwitcher = `<div class="report-perspective-switcher" aria-label="Switch report perspective">
+        <span>Perspective</span>
+        ${[
+            ['operator', 'Community Operator'],
+            ['investor', 'Investor'],
+            ['builder', 'Project Builder'],
+            ['researcher', 'Researcher'],
+        ].map(([key, label]) => `<button class="${reportPersona === key ? 'active' : ''}" ${reportPersona === key ? 'disabled' : ''} onclick="switchReportPerspective(${analysisId},'${key}')">${label}</button>`).join('')}
+    </div>`;
     const card = `<section class="analysis-poster" data-analysis-id="${analysisId}">
         <div class="poster-toolbar"><button class="back-link" onclick="backToMarketDiscovery()">← Back to Top 10</button><strong>${escapeHtml(personaLabel(report.persona))} Report</strong><span>${formatDate(new Date().toISOString())}</span></div>
         <div class="editable-block">${tokenHeader}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove token details">×</button></div>
@@ -1521,6 +1834,7 @@ function renderAnalysisResult(data) {
     </section>`;
     const orderedCard = `<section class="analysis-poster" data-analysis-id="${analysisId}">
         <div class="poster-toolbar"><button class="back-link" onclick="backToMarketDiscovery()">← Back to Top 10</button><strong>${escapeHtml(personaLabel(report.persona))} Report</strong><span>${formatDate(new Date().toISOString())}</span></div>
+        ${perspectiveSwitcher}
         <div class="editable-block">${tokenHeader}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove token details">×</button></div>
         ${chartImgs ? `<div class="editable-block chart-first">${chartImgs}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove charts">×</button></div>` : ''}
         ${recCard ? `<div class="editable-block report-after-charts">${recCard}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove written analysis">×</button></div>` : ''}
@@ -1528,6 +1842,19 @@ function renderAnalysisResult(data) {
     </section>`;
     container.insertAdjacentHTML('afterbegin', orderedCard);
     loadPosterProviderStatus(analysisId);
+}
+
+async function switchReportPerspective(analysisId, persona) {
+    const source = state.reportRequests[analysisId];
+    if (!source?.prompt) {
+        return alert('The original report request is unavailable. Reopen this report from history and try again.');
+    }
+    state.currentPersona = persona;
+    localStorage.setItem('meme_ops_persona', persona);
+    await startAnalysisJob({
+        ...source,
+        persona,
+    }, {switchingFrom: analysisId});
 }
 
 function backToMarketDiscovery() {
@@ -1973,11 +2300,14 @@ function socialConnectionCards(data, prominent = false) {
         ? `<button class="btn-small danger-link" onclick="disconnectSocial('telegram')">Disconnect</button>`
         : telegramReady
             ? '<button class="btn-small social-connect-button telegram-connect" onclick="connectSocialTelegram()">Connect Telegram</button>'
-            : '<span class="social-setup-badge">Setup required</span>';
+            : `<div class="social-setup-actions">
+                <span class="social-setup-badge">Setup required</span>
+                <button class="social-help-link" onclick="openTelegramSetupGuide()">Setup guide →</button>
+               </div>`;
     const communities = data.communities || [];
     return `
         <div class="social-connection-list ${prominent ? 'social-connection-list-prominent' : ''}">
-            <article class="social-connection-card ${x ? 'is-connected' : ''}">
+            <article class="social-connection-card ${x ? 'is-connected' : ''}" data-provider="x">
                 ${socialProviderLogo('x')}
                 <div class="social-provider-copy">
                     <strong>X</strong>
@@ -1990,7 +2320,7 @@ function socialConnectionCards(data, prominent = false) {
                 </div>
                 ${xAction}
             </article>
-            <article class="social-connection-card ${telegram ? 'is-connected' : ''}">
+            <article class="social-connection-card ${telegram ? 'is-connected' : ''}" data-provider="telegram">
                 ${socialProviderLogo('telegram')}
                 <div class="social-provider-copy">
                     <strong>Telegram</strong>
@@ -2023,6 +2353,10 @@ async function loadSocialConnections(targetId = 'socialConnections', prominent =
     }
     const data = await resp.json();
     el.innerHTML = socialConnectionCards(data, prominent);
+    state.socialConnections = Object.fromEntries(
+        (data.connections || []).map(item => [item.provider, item])
+    );
+    updateTopConnectionStatus();
 }
 
 async function socialApi(path, options = {}) {
@@ -2041,8 +2375,11 @@ async function socialApi(path, options = {}) {
 
 async function connectSocialX() {
     try {
+        showToast('Opening X authorization...');
         const data = await socialApi('/api/social/x/connect', {method: 'POST'});
-        location.href = data.authorization_url;
+        if (!data.authorization_url) throw new Error('X did not return an authorization URL');
+        sessionStorage.setItem('meme_ops_social_pending', 'x');
+        window.location.assign(data.authorization_url);
     } catch (error) {
         alert(error.message);
     }
@@ -2072,11 +2409,40 @@ async function connectSocialTelegram() {
         script.setAttribute('data-telegram-login', data.bot_username);
         script.setAttribute('data-size', 'large');
         script.setAttribute('data-auth-url', data.callback_url);
-        script.setAttribute('data-request-access', 'write');
+        script.onerror = () => {
+            document.getElementById('telegramWidgetMount').innerHTML = `
+                <div class="social-connection-error">Telegram login could not load. Check browser content blocking or open the setup guide.</div>
+                <button class="btn-small" onclick="openTelegramSetupGuide()">Open setup guide</button>`;
+        };
         document.getElementById('telegramWidgetMount').appendChild(script);
     } catch (error) {
         alert(error.message);
     }
+}
+
+function openTelegramSetupGuide() {
+    document.getElementById('telegramSetupOverlay')?.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'quote-overlay';
+    overlay.id = 'telegramSetupOverlay';
+    overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
+    overlay.innerHTML = `
+        <div class="quote-dialog social-login-dialog telegram-setup-guide">
+            <div class="quote-header">
+                <div><strong>Telegram connection setup</strong><p>Identity binding cannot work until the server can verify the Telegram login signature.</p></div>
+                <button onclick="document.getElementById('telegramSetupOverlay').remove()">×</button>
+            </div>
+            <ol>
+                <li>Open <strong>@BotFather</strong>, select your bot, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
+                <li>In Railway Variables set <code>TELEGRAM_BOT_USERNAME</code>, <code>TELEGRAM_BOT_TOKEN</code>, and <code>TELEGRAM_WEBHOOK_SECRET</code>.</li>
+                <li>Set <code>APP_PUBLIC_URL</code> to <code>${escapeHtml(window.location.origin)}</code>, redeploy, then return and select Connect Telegram.</li>
+            </ol>
+            <div class="settings-actions">
+                <a class="btn-small" href="https://core.telegram.org/widgets/login" target="_blank" rel="noopener noreferrer">Official login guide</a>
+                <a class="btn btn-primary" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open @BotFather</a>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
 }
 
 async function disconnectSocial(provider) {
@@ -2084,6 +2450,7 @@ async function disconnectSocial(provider) {
     try {
         await socialApi(`/api/social/connections/${provider}`, {method: 'DELETE'});
         await loadSocialConnections();
+        await updateTopConnectionStatus();
     } catch (error) {
         alert(error.message);
     }

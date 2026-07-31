@@ -7,9 +7,11 @@ import os
 import asyncio
 import re
 import hashlib
+import copy
+import time
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 from openai import AsyncOpenAI
@@ -24,6 +26,10 @@ load_project_env()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MEMORY_PROMPT_PATH = PROJECT_ROOT / "MEMORY_PROMPT.md"
 PERSONAS_DIR = PROJECT_ROOT / "personas"
+ANALYSIS_DATA_CACHE_SECONDS = max(
+    30, int(os.getenv("ANALYSIS_DATA_CACHE_SECONDS", "90"))
+)
+_ANALYSIS_DATA_CACHE: dict[tuple[str, str, str], tuple[float, dict]] = {}
 
 # 维度定义（共享层）
 DIMENSIONS = [
@@ -169,7 +175,12 @@ class MemeOpsAgent:
     async def analyze(
         self, prompt: str, report_style: str | None = None,
         owner_address: str | None = None,
+        progress_callback: Callable[[int, str], None] | None = None,
     ) -> dict:
+        def progress(value: int, stage: str) -> None:
+            if progress_callback:
+                progress_callback(value, stage)
+
         if not self.memory_prompt:
             self.reload_memory()
         # 每次分析强制重读 persona 文件
@@ -193,20 +204,43 @@ class MemeOpsAgent:
         ]
 
         # 1. 拉取真实数据
+        cache_key = (
+            str(owner_address or "public").lower(),
+            str(request_intent.get("token_query") or "").strip().lower(),
+            str(request_intent.get("chain") or "unknown").strip().lower(),
+        )
+        now = time.monotonic()
+        for expired_key, (expires_at, _) in list(_ANALYSIS_DATA_CACHE.items()):
+            if expires_at <= now:
+                _ANALYSIS_DATA_CACHE.pop(expired_key, None)
+        cached = _ANALYSIS_DATA_CACHE.get(cache_key)
+        cache_hit = bool(cached and cached[0] > now)
         try:
-            raw_data = await self._fetch_raw_data(
-                request_intent["token_query"],
-                request_intent.get("chain"),
-                prompt,
-            )
-            raw_data = await enrich_raw_data_with_social(raw_data, owner_address)
+            if cache_hit:
+                progress(24, "Reusing a fresh verified market snapshot")
+                raw_data = copy.deepcopy(cached[1])
+            else:
+                progress(14, "Fetching market and identity data")
+                raw_data = await self._fetch_raw_data(
+                    request_intent["token_query"],
+                    request_intent.get("chain"),
+                    prompt,
+                )
+                progress(34, "Joining wallet-private social intelligence")
+                raw_data = await enrich_raw_data_with_social(raw_data, owner_address)
+                _ANALYSIS_DATA_CACHE[cache_key] = (
+                    time.monotonic() + ANALYSIS_DATA_CACHE_SECONDS,
+                    copy.deepcopy(raw_data),
+                )
         except Exception as e:
             raw_data = {"query": prompt, "dexscreener": {}, "coingecko": {}, "_sources": [], "_error": str(e)}
 
         # 2. 用 LLM 打分 + 生成报告
+        progress(46, "Building the persona-specific evidence model")
         analysis_core = self._fallback_analyze(prompt, raw_data, request_intent)
         try:
             if DEEPSEEK_API_KEY:
+                progress(55, "Writing the report with DeepSeek")
                 report = await self._llm_analyze(
                     prompt, raw_data, request_intent, analysis_core,
                 )
@@ -223,6 +257,7 @@ class MemeOpsAgent:
             report["generation_mode"] = "rules"
             report["generation_model"] = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None
 
+        progress(72, "Validating facts and report structure")
         report = self._enrich_report_content(report, raw_data, request_intent)
         report["rag_context"] = {
             "wallet_private": bool(owner_address),
@@ -239,6 +274,10 @@ class MemeOpsAgent:
         report["analyzed_at"] = datetime.now().isoformat()
         report["request_intent"] = request_intent
         report["asset_match"] = raw_data.get("asset_match", "unknown")
+        report["data_cache"] = {
+            "hit": cache_hit,
+            "ttl_seconds": ANALYSIS_DATA_CACHE_SECONDS,
+        }
 
         # 强制设置 chain：优先用链提示，其次用 DexScreener 返回的 chainId
         token = report.get("token", {})

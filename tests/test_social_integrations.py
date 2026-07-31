@@ -7,6 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from cryptography.fernet import Fernet
 
@@ -92,6 +93,27 @@ class SocialIntegrationTests(unittest.TestCase):
         self.assertEqual(result["verifier"], "verifier")
         with self.assertRaises(ValueError):
             social._consume_oauth_state(pending, "x")
+
+    def test_social_callbacks_use_request_domain_when_public_url_is_unset(self):
+        with patch.dict(os.environ, {"APP_PUBLIC_URL": ""}, clear=False):
+            x = social.begin_x_connection(
+                "0xaaa", "https://memeops-production.up.railway.app/",
+            )
+            redirect_uri = parse_qs(
+                urlparse(x["authorization_url"]).query
+            )["redirect_uri"][0]
+            telegram = social.begin_telegram_connection(
+                "0xaaa", "https://memeops-production.up.railway.app/",
+            )
+        self.assertEqual(
+            redirect_uri,
+            "https://memeops-production.up.railway.app/api/social/x/callback",
+        )
+        self.assertTrue(
+            telegram["callback_url"].startswith(
+                "https://memeops-production.up.railway.app/api/social/telegram/callback"
+            )
+        )
 
     def test_telegram_login_signature_is_verified(self):
         payload = {

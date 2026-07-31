@@ -296,6 +296,41 @@ class StaticProductRequirementsTests(unittest.TestCase):
         for marker in ("selected_fact_ids", "copy_density", "context_lines", "visual_keywords"):
             self.assertIn(marker, planner)
 
+    def test_report_charts_enlarge_individually_and_persona_switches_in_place(self):
+        self.assertIn("clickable-report-chart", APP)
+        self.assertIn("openImageViewer(this.src,this.alt)", APP)
+        self.assertIn("report-perspective-switcher", APP + STYLE)
+        self.assertIn("switchReportPerspective", APP)
+
+    def test_analysis_jobs_are_non_blocking_cancellable_and_restorable(self):
+        for marker in (
+            '@app.post("/api/analysis/jobs"',
+            '@app.get("/api/analysis/jobs/{job_id}")',
+            '@app.delete("/api/analysis/jobs/{job_id}")',
+            "asyncio.to_thread(generate_all_charts, report)",
+        ):
+            self.assertIn(marker, MAIN)
+        for marker in (
+            "startAnalysisJob", "cancelAnalysisJob", "restoreAnalysisJobs",
+            "analysis-job-dock", "meme_ops_analysis_draft",
+        ):
+            self.assertIn(marker, APP + STYLE)
+        submit = APP[APP.index("async function submitAnalysis()"):APP.index("function persistAnalysisJobs")]
+        self.assertNotIn("showLoading(true)", submit)
+
+    def test_top_connection_icons_and_social_callback_feedback(self):
+        social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
+        html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        for marker in ("walletStatusIcon", "xStatusIcon", "telegramStatusIcon"):
+            self.assertIn(marker, html)
+        for marker in (
+            "injectedWalletInfo", "updateTopConnectionStatus",
+            "handleSocialReturn", "openTelegramSetupGuide",
+        ):
+            self.assertIn(marker, APP)
+        self.assertIn("request_base_url", social)
+        self.assertIn("or request_base_url", social)
+
 
 if __name__ == "__main__":
     unittest.main()
