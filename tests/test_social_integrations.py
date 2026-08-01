@@ -33,6 +33,8 @@ class SocialIntegrationTests(unittest.TestCase):
                 "TELEGRAM_BOT_TOKEN": "123456:test-bot-token",
                 "TELEGRAM_BOT_USERNAME": "meme_ops_test_bot",
                 "X_CLIENT_ID": "test-client-id",
+                "X_CLIENT_SECRET": "test-client-secret",
+                "X_OAUTH_PUBLIC_CLIENT": "false",
             },
             clear=False,
         )
@@ -85,6 +87,33 @@ class SocialIntegrationTests(unittest.TestCase):
         self.assertTrue(status["telegram"]["bot_username_configured"])
         self.assertFalse(status["telegram"]["bot_token_configured"])
         self.assertFalse(status["telegram"]["login_configured"])
+
+    def test_x_web_app_requires_client_secret_unless_public_pkce_is_explicit(self):
+        with patch.dict(
+            os.environ,
+            {
+                "X_CLIENT_ID": "test-client-id",
+                "X_CLIENT_SECRET": "",
+                "X_OAUTH_PUBLIC_CLIENT": "false",
+            },
+            clear=False,
+        ):
+            status = social.social_provider_status()
+            self.assertFalse(status["x"]["oauth_configured"])
+            with self.assertRaises(social.SocialConfigurationError):
+                social.begin_x_connection("0xaaa", "https://example.com/")
+
+        with patch.dict(
+            os.environ,
+            {
+                "X_CLIENT_ID": "test-client-id",
+                "X_CLIENT_SECRET": "",
+                "X_OAUTH_PUBLIC_CLIENT": "true",
+            },
+            clear=False,
+        ):
+            status = social.social_provider_status()
+            self.assertTrue(status["x"]["oauth_configured"])
 
     def test_oauth_state_is_temporary_and_one_time(self):
         pending = social._save_oauth_state("0xaaa", "x", "verifier")
@@ -167,6 +196,27 @@ class SocialIntegrationTests(unittest.TestCase):
             "TELEGRAM",
             " ".join(item["content"] for item in owner_b["rag_documents"]),
         )
+
+    def test_bound_identities_are_not_reported_as_disconnected_without_metrics(self):
+        asset_key = social.upsert_social_asset(
+            {
+                "coin_id": "dogecoin",
+                "name": "Dogecoin",
+                "symbol": "DOGE",
+                "chain": "dogecoin",
+            },
+            rank=1,
+        )
+        social._upsert_connection("0xaaa", "x", "1", "operator", "token")
+        social._upsert_connection("0xaaa", "telegram", "2", "operator_tg", None)
+
+        context = social.latest_social_context(asset_key, owner_address="0xaaa")
+
+        self.assertFalse(context["connected"])
+        self.assertTrue(context["binding_connected"])
+        self.assertEqual(context["providers"]["x"]["status"], "connected_no_data")
+        self.assertEqual(context["providers"]["telegram"]["status"], "group_not_bound")
+        self.assertEqual(context["providers"]["reddit"]["status"], "not_configured")
 
     def test_collector_universe_never_drops_below_one_hundred(self):
         with patch.dict(os.environ, {"SOCIAL_ASSET_UNIVERSE_SIZE": "10"}):

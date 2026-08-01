@@ -86,6 +86,8 @@ _watchlist_market_cache = {}
 _poster_draft_cache = {}
 _analysis_jobs: dict[str, dict] = {}
 _analysis_job_tasks: dict[str, asyncio.Task] = {}
+_comparison_jobs: dict[str, dict] = {}
+_comparison_job_tasks: dict[str, asyncio.Task] = {}
 _ANALYSIS_JOB_TTL_SECONDS = 60 * 60
 
 
@@ -411,6 +413,7 @@ def _prune_analysis_jobs() -> None:
 def _public_analysis_job(job: dict) -> dict:
     payload = {
         "job_id": job["job_id"],
+        "kind": "analysis",
         "status": job["status"],
         "progress": job.get("progress", 0),
         "stage": job.get("stage", "Queued"),
@@ -544,6 +547,164 @@ async def cancel_analysis_job(job_id: str, user=Depends(get_current_user)):
     return _public_analysis_job(job)
 
 
+def _prune_comparison_jobs() -> None:
+    cutoff = time.time() - _ANALYSIS_JOB_TTL_SECONDS
+    expired = [
+        job_id for job_id, job in _comparison_jobs.items()
+        if job.get("updated_at", job.get("created_at", 0)) < cutoff
+        and job.get("status") in {"completed", "failed", "cancelled"}
+    ]
+    for job_id in expired:
+        _comparison_jobs.pop(job_id, None)
+        _comparison_job_tasks.pop(job_id, None)
+
+
+def _public_comparison_job(job: dict) -> dict:
+    payload = {
+        "job_id": job["job_id"],
+        "kind": "comparison",
+        "status": job["status"],
+        "progress": job.get("progress", 0),
+        "stage": job.get("stage", "Queued"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "source_request": job.get("source_request"),
+    }
+    if job.get("status") == "completed":
+        payload["result"] = job.get("result")
+    elif job.get("status") == "failed":
+        payload["error"] = job.get("error") or "Comparison failed"
+    return payload
+
+
+def _get_owned_comparison_job(job_id: str, user: str) -> dict:
+    job = _comparison_jobs.get(job_id)
+    if not job or job.get("owner_address") != user.lower():
+        raise HTTPException(status_code=404, detail="Comparison job not found")
+    return job
+
+
+def _resolve_comparison_inputs(
+    req: ComparisonRequest, user: str,
+) -> tuple[str, list[dict]]:
+    if len(set(req.watchlist_ids)) != len(req.watchlist_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Duplicate watchlist assets are not allowed",
+        )
+    persona = req.persona if req.persona in (
+        "investor", "operator", "builder", "researcher",
+    ) else "operator"
+    owned = {item["id"]: item for item in get_watchlist(user)}
+    selected = [owned[item_id] for item_id in req.watchlist_ids if item_id in owned]
+    if len(selected) != len(req.watchlist_ids):
+        raise HTTPException(
+            status_code=403,
+            detail="One or more selected assets do not belong to this wallet",
+        )
+    return persona, selected
+
+
+async def _run_comparison_job(
+    job_id: str,
+    req: ComparisonRequest,
+    user: str,
+    persona: str,
+    selected: list[dict],
+) -> None:
+    job = _comparison_jobs[job_id]
+
+    def update(progress: int, stage: str) -> None:
+        job.update({
+            "progress": max(0, min(int(progress), 100)),
+            "stage": stage,
+            "updated_at": time.time(),
+        })
+
+    try:
+        job["status"] = "running"
+        update(6, "Validating wallet-private comparison inputs")
+        worker_agent = MemeOpsAgent()
+        report = await build_comparison_report(
+            worker_agent,
+            selected,
+            persona,
+            req.report_style,
+            owner_address=user,
+            progress_callback=update,
+        )
+        update(94, "Saving the comparison report")
+        comparison_id = save_comparison_report(
+            owner_address=user,
+            title=report["title"],
+            persona=persona,
+            report=report,
+            report_style=req.report_style,
+        )
+        job["result"] = {
+            "comparison_id": comparison_id,
+            "report": report,
+            "created_at": report.get("generated_at"),
+            "source_request": req.model_dump(),
+        }
+        job["status"] = "completed"
+        update(100, "Comparison ready")
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
+        update(job.get("progress", 0), "Comparison stopped")
+    except Exception as error:
+        job["status"] = "failed"
+        job["error"] = str(error)[:500]
+        update(job.get("progress", 0), "Comparison failed")
+    finally:
+        _comparison_job_tasks.pop(job_id, None)
+
+
+@app.post("/api/comparison/jobs", status_code=202)
+async def create_comparison_job(
+    req: ComparisonRequest, user=Depends(get_current_user),
+):
+    """Start a cancellable comparison without blocking navigation."""
+    _prune_comparison_jobs()
+    persona, selected = _resolve_comparison_inputs(req, user)
+    job_id = uuid.uuid4().hex
+    now = time.time()
+    _comparison_jobs[job_id] = {
+        "job_id": job_id,
+        "owner_address": user.lower(),
+        "status": "queued",
+        "progress": 0,
+        "stage": "Queued",
+        "source_request": req.model_dump(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    _comparison_job_tasks[job_id] = asyncio.create_task(
+        _run_comparison_job(job_id, req, user, persona, selected)
+    )
+    return _public_comparison_job(_comparison_jobs[job_id])
+
+
+@app.get("/api/comparison/jobs/{job_id}")
+async def comparison_job_status(job_id: str, user=Depends(get_current_user)):
+    _prune_comparison_jobs()
+    return _public_comparison_job(_get_owned_comparison_job(job_id, user))
+
+
+@app.delete("/api/comparison/jobs/{job_id}")
+async def cancel_comparison_job(job_id: str, user=Depends(get_current_user)):
+    job = _get_owned_comparison_job(job_id, user)
+    if job["status"] in {"completed", "failed", "cancelled"}:
+        return _public_comparison_job(job)
+    job["status"] = "cancelling"
+    job["stage"] = "Stopping safely"
+    job["updated_at"] = time.time()
+    task = _comparison_job_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    return _public_comparison_job(job)
+
+
 @app.get("/api/history")
 async def history(
     limit: int = 20, offset: int = 0, persona: str = None,
@@ -558,18 +719,7 @@ async def create_comparison(
     req: ComparisonRequest, user=Depends(get_current_user),
 ):
     """Create one wallet-private, same-persona horizontal comparison report."""
-    if len(set(req.watchlist_ids)) != len(req.watchlist_ids):
-        raise HTTPException(status_code=400, detail="Duplicate watchlist assets are not allowed")
-    persona = req.persona if req.persona in (
-        "investor", "operator", "builder", "researcher",
-    ) else "operator"
-    owned = {item["id"]: item for item in get_watchlist(user)}
-    selected = [owned[item_id] for item_id in req.watchlist_ids if item_id in owned]
-    if len(selected) != len(req.watchlist_ids):
-        raise HTTPException(
-            status_code=403,
-            detail="One or more selected assets do not belong to this wallet",
-        )
+    persona, selected = _resolve_comparison_inputs(req, user)
     report = await build_comparison_report(
         agent, selected, persona, req.report_style, owner_address=user,
     )

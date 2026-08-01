@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import datetime
+from typing import Callable
 
 from agent import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, PERSONA_REPORT_CONFIG
 
@@ -142,26 +143,45 @@ async def build_comparison_report(
     persona: str,
     report_style: str | None = None,
     owner_address: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict:
     """Analyze selected assets sequentially, then synthesize one horizontal report."""
     report_agent.set_persona(persona)
     semaphore = asyncio.Semaphore(3)
 
-    async def analyze_item(item):
+    completed = 0
+    total = len(watchlist_items)
+    if progress_callback:
+        progress_callback(12, f"Preparing {total} wallet-private asset analyses")
+
+    async def analyze_item(index, item):
+        nonlocal completed
         prompt = f"{item['token_name']} {item.get('chain') or ''}".strip()
         async with semaphore:
             if owner_address:
-                return await report_agent.analyze(
+                report = await report_agent.analyze(
                     prompt, report_style, owner_address=owner_address,
                 )
-            return await report_agent.analyze(prompt, report_style)
+            else:
+                report = await report_agent.analyze(prompt, report_style)
+        completed += 1
+        if progress_callback:
+            progress_callback(
+                12 + int(58 * completed / max(total, 1)),
+                f"Analyzed {completed} of {total} assets",
+            )
+        return index, report
 
     # Selected assets are independent inputs. A small concurrency cap avoids the
     # previous N× model latency while staying friendly to provider rate limits.
-    reports = await asyncio.gather(*(
-        analyze_item(item) for item in watchlist_items
+    indexed_reports = await asyncio.gather(*(
+        analyze_item(index, item)
+        for index, item in enumerate(watchlist_items)
     ))
+    reports = [report for _, report in sorted(indexed_reports)]
 
+    if progress_callback:
+        progress_callback(76, "Building the persona-specific comparison matrix")
     comparison = _deterministic_comparison(reports, persona)
     if not DEEPSEEK_API_KEY:
         return comparison
@@ -207,6 +227,8 @@ Return JSON only:
   "next_actions": ["2-5 persona-specific actions after the comparison"]
 }}
 Do not invent or change scores, token identities, chains, or market figures."""
+    if progress_callback:
+        progress_callback(84, "Writing the cross-asset conclusion with DeepSeek")
     try:
         response = await report_agent._get_llm().chat.completions.create(
             model=DEEPSEEK_MODEL,

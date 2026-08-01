@@ -318,6 +318,26 @@ class StaticProductRequirementsTests(unittest.TestCase):
         submit = APP[APP.index("async function submitAnalysis()"):APP.index("function persistAnalysisJobs")]
         self.assertNotIn("showLoading(true)", submit)
 
+    def test_comparison_jobs_are_non_blocking_cancellable_and_restorable(self):
+        for marker in (
+            '@app.post("/api/comparison/jobs"',
+            '@app.get("/api/comparison/jobs/{job_id}")',
+            '@app.delete("/api/comparison/jobs/{job_id}")',
+            "_run_comparison_job",
+        ):
+            self.assertIn(marker, MAIN)
+        for marker in (
+            "startComparisonJob", "kind === 'comparison'",
+            "Comparison ready", "Comparison stopped",
+        ):
+            self.assertIn(marker, APP + MAIN)
+        create = APP[
+            APP.index("async function createComparisonReport()"):
+            APP.index("async function loadComparisonDetail")
+        ]
+        self.assertNotIn("showLoading(true)", create)
+        self.assertNotIn("/api/comparisons`", create)
+
     def test_top_connection_icons_and_social_callback_feedback(self):
         social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
         html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
@@ -330,6 +350,18 @@ class StaticProductRequirementsTests(unittest.TestCase):
             self.assertIn(marker, APP)
         self.assertIn("request_base_url", social)
         self.assertIn("or request_base_url", social)
+
+    def test_social_setup_requires_x_secret_and_keeps_telegram_tokens_server_side(self):
+        social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
+        example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn("X_OAUTH_PUBLIC_CLIENT", social + example)
+        self.assertIn("X token exchange was rejected (401)", social)
+        for marker in (
+            "Project administrator action", "refreshTelegramSetup",
+            "Regular users never paste a Bot Token", "Check server setup",
+        ):
+            self.assertIn(marker, APP)
+        self.assertNotIn('id="telegramBotToken"', APP)
 
 
 if __name__ == "__main__":

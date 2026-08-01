@@ -960,8 +960,12 @@ button.market-row:hover { background:var(--bg-hover); }
 .social-help-link { border:0;background:transparent;color:var(--accent);font-size:.68rem;cursor:pointer; }
 .social-help-link:hover { text-decoration:underline; }
 .telegram-setup-guide { width:min(620px,calc(100vw - 32px)); }
+.telegram-admin-notice { margin:14px 0 4px;padding:12px 14px;border:1px solid rgba(108,99,255,.35);border-radius:10px;background:rgba(108,99,255,.08); }
+.telegram-admin-notice strong { font-size:.76rem;color:var(--text); }
+.telegram-admin-notice p { margin:5px 0 0;color:var(--text-muted);font-size:.7rem;line-height:1.5; }
 .telegram-setup-guide ol { display:grid;gap:11px;margin:16px 0;padding-left:22px;color:var(--text-muted);font-size:.78rem;line-height:1.55; }
 .telegram-setup-guide code { color:var(--text);word-break:break-word; }
+.telegram-setup-guide .settings-actions { flex-wrap:wrap; }
 
 @media (max-width:768px) {
     .analysis-controls { top:53px; }

@@ -205,7 +205,7 @@ class MemeOpsAgent:
 
         # 1. 拉取真实数据
         cache_key = (
-            str(owner_address or "public").lower(),
+            "market",
             str(request_intent.get("token_query") or "").strip().lower(),
             str(request_intent.get("chain") or "unknown").strip().lower(),
         )
@@ -226,14 +226,38 @@ class MemeOpsAgent:
                     request_intent.get("chain"),
                     prompt,
                 )
-                progress(34, "Joining wallet-private social intelligence")
-                raw_data = await enrich_raw_data_with_social(raw_data, owner_address)
+                # Cache only public market facts. Wallet-bound social state can
+                # change at any time (for example immediately after an OAuth or
+                # Telegram group binding) and must never be served from this
+                # market-data cache.
+                raw_data.pop("social", None)
                 _ANALYSIS_DATA_CACHE[cache_key] = (
                     time.monotonic() + ANALYSIS_DATA_CACHE_SECONDS,
                     copy.deepcopy(raw_data),
                 )
         except Exception as e:
             raw_data = {"query": prompt, "dexscreener": {}, "coingecko": {}, "_sources": [], "_error": str(e)}
+
+        # Always resolve private social evidence after the market cache. This
+        # makes a newly connected X account or Telegram community visible on
+        # the very next analysis without waiting for the cache TTL.
+        progress(34, "Joining current wallet-private social intelligence")
+        try:
+            raw_data.pop("social", None)
+            raw_data["_sources"] = [
+                source for source in (raw_data.get("_sources") or [])
+                if source != "Social intelligence"
+            ]
+            raw_data = await enrich_raw_data_with_social(raw_data, owner_address)
+        except Exception as error:
+            raw_data["social"] = {
+                "connected": False,
+                "binding_connected": False,
+                "status": "collection-error",
+                "metrics": [],
+                "rag_documents": [],
+                "collection_error": str(error),
+            }
 
         # 2. 用 LLM 打分 + 生成报告
         progress(46, "Building the persona-specific evidence model")
@@ -525,8 +549,10 @@ Exclusive report contract for {persona_config['name']}:
 - Required modules: {json.dumps(persona_config['sections'], ensure_ascii=False)}
 - Community Operator reports prioritize operations and may omit price/liquidity prose
   unless explicitly useful as a weak activity proxy. They always include a 7-day plan.
-- Never report a missing social value as zero. Say "not connected" or "not available",
-  use neutral wording, and do not infer follower or subscriber counts.
+- Never report a missing social value as zero. Distinguish an unbound identity
+  (not_connected), a bound identity without a metric snapshot (connected_no_data),
+  a required Telegram group step (action_required), and an unsupported source
+  (not_configured). Use neutral wording and do not infer follower or subscriber counts.
 - Distinguish verified facts, directional proxies, inferences, and unavailable data.
 
 Wallet-private persona RAG context (preferences only, never factual evidence):
@@ -554,13 +580,13 @@ Return JSON only, without a Markdown code fence:
     {{"inference":"Useful further conclusion","evidence":"Source-backed evidence","confidence":"high|medium|low"}}
   ],
   "report_sections": [
-    {{"title":"Persona-specific module","content":"Useful prose","status":"verified|proxy|not_connected"}}
+    {{"title":"Persona-specific module","content":"Useful prose","status":"verified|proxy|not_connected|connected_no_data|action_required|not_configured"}}
   ],
   "action_plan": [
     {{"day":"Day 1","theme":"Concrete theme","actions":["Specific action"],"kpi":"Measurable KPI","dependency":"Needed channel or data"}}
   ],
   "data_gaps": [
-    {{"source":"X community metrics","status":"not_connected","impact":"What cannot be concluded"}}
+    {{"source":"X community metrics","status":"not_connected|connected_no_data|action_required|not_configured","impact":"What cannot be concluded or which setup step remains"}}
   ],
   "recommendation": "A concise English recommendation reflecting the selected Persona",
   "analysis_summary": "A summary visibly following the requested writing style",
@@ -723,12 +749,17 @@ to the requested writing style, but never alter, omit, or invent factual market 
         ):
             if not styled_report.get(field):
                 styled_report[field] = analysis_core.get(field)
+        # Connection states and provider gaps come from the wallet-bound source
+        # model, not from the language model. Keep them immutable so a connected
+        # identity cannot be rewritten as disconnected (or vice versa).
+        styled_report["data_gaps"] = analysis_core.get("data_gaps") or []
         styled_report["decision_label"] = (
             styled_report.get("decision_label")
             or analysis_core.get("decision_label")
         )
         social_gap = any(
-            str(item.get("status") or "").lower() == "not_connected"
+            str(item.get("status") or "").lower()
+            in {"not_connected", "connected_no_data", "action_required", "not_configured"}
             and any(
                 marker in str(item.get("source") or "").lower()
                 for marker in ("x", "reddit", "social", "community", "telegram", "discord")
@@ -962,6 +993,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             parts.append("### CoinGecko: no data found")
 
         social = raw_data.get("social") or {}
+        provider_states = social.get("providers") or {}
         if social.get("connected"):
             parts.append("\n### Connected social intelligence")
             for metric in social.get("metrics") or []:
@@ -985,10 +1017,41 @@ to the requested writing style, but never alter, omit, or invent factual market 
                     f"- Social RAG [{document.get('platform')}]: {document.get('content')}"
                 )
         else:
+            parts.append("\n### Social intelligence: no verified asset snapshot yet")
+            if social.get("binding_connected"):
+                parts.append(
+                    "- A wallet-bound social identity is connected, but no verified metric "
+                    "snapshot is available for this exact asset yet. Do not label the account "
+                    "or community as disconnected."
+                )
+            else:
+                parts.append(
+                    "- No shared or wallet-bound X/Telegram snapshot is available for this exact asset. "
+                    "Do not infer zero followers, weak discussion, or low community quality."
+                )
+        if provider_states:
+            parts.append("- Provider states:")
+            for provider in ("x", "telegram", "reddit"):
+                state = provider_states.get(provider) or {}
+                parts.append(
+                    f"  - {provider.upper()}: {state.get('status', 'unknown')}"
+                    + (
+                        f"; connected identity @{state.get('username')}"
+                        if state.get("identity_connected") and state.get("username")
+                        else "; connected identity"
+                        if state.get("identity_connected")
+                        else ""
+                    )
+                    + (
+                        f"; {state.get('community_count')} bound communities"
+                        if provider == "telegram" and state.get("community_count") is not None
+                        else ""
+                    )
+                )
+        if social.get("collection_error"):
             parts.append(
-                "\n### Social intelligence: not connected\n"
-                "- No shared or wallet-bound X/Telegram snapshot is available for this exact asset. "
-                "Do not infer zero followers, weak discussion, or low community quality."
+                "- Collection attempt failed after identity verification. Treat this as "
+                "connected-but-unavailable provider data, not as a disconnected account."
             )
 
         return "\n".join(parts) if parts else "No data available"
@@ -1050,6 +1113,35 @@ to the requested writing style, but never alter, omit, or invent factual market 
             or reddit_subscribers is not None
             or social_context.get("connected")
         )
+        provider_states = social_context.get("providers") or {}
+        social_binding_connected = bool(social_context.get("binding_connected"))
+        x_state = (provider_states.get("x") or {}).get("status")
+        telegram_state = (provider_states.get("telegram") or {}).get("status")
+        if social_binding_connected and not social_connected:
+            availability_parts = []
+            if x_state == "connected_no_data":
+                availability_parts.append(
+                    "X identity is connected, but the current API plan or permissions "
+                    "did not return an asset-level metric snapshot"
+                )
+            if telegram_state == "group_not_bound":
+                availability_parts.append(
+                    "Telegram identity is connected, but no operated group/channel is bound"
+                )
+            elif telegram_state == "connected_no_data":
+                availability_parts.append(
+                    "Telegram is connected to a community, but its latest metric sync is unavailable"
+                )
+            social_availability = (
+                "; ".join(availability_parts)
+                or "A wallet-bound social identity is connected, but verified asset-level metrics are not available yet"
+            )
+            social_availability += ". Missing metrics remain unknown rather than zero."
+        else:
+            social_availability = (
+                "X and Telegram identities are not connected for this wallet, and Reddit "
+                "analytics are not configured. Missing metrics remain unknown rather than zero."
+            )
         market_cap = (cg.get("market_data", {}).get("market_cap", {}).get("usd", 0) or 0) if cg else 0
 
         # 详细打分
@@ -1104,9 +1196,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
                     f"{'Community reach appears strong.' if social_score >= 7 else 'Community reach appears moderate.'}"
                 )
                 if social_connected else
-                "X and Reddit community metrics are not connected in the current source. "
-                "No audience-size or discussion-quality conclusion is made; on-chain activity "
-                "is shown only as a directional proxy, not as a substitute."
+                social_availability + " No audience-size or discussion-quality conclusion is made; "
+                "on-chain activity is shown only as a directional proxy, not as a substitute."
             ),
             "social_trending": (
                 f"24h volume is ${total_volume_24h:,.0f} against a ${market_cap:,.0f} market cap. "
@@ -1155,7 +1246,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
                         f"{'strong' if social_score >= 7 else 'moderate'} potential reach."
                     )
                     if social_connected else
-                    "X/Reddit metrics are not connected; community reach is not scored as zero."
+                    social_availability + " Community reach is not scored as zero."
                 ),
                 "social_trending": (
                     f"${total_volume_24h:,.0f} 24h volume versus ${market_cap:,.0f} market cap indicates "
@@ -1195,8 +1286,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
                         "quality, sentiment dispersion, and campaign-adjusted growth remain unavailable."
                     )
                     if social_connected else
-                    "X and Reddit community endpoints are not connected in the current source set. "
-                    "The report therefore makes no audience-size, engagement-quality, or sentiment claim. "
+                    social_availability + " The report therefore makes no audience-size, "
+                    "engagement-quality, or sentiment claim. "
                     "Any transaction activity used elsewhere is explicitly a directional proxy and not "
                     "a replacement for community telemetry."
                 ),
@@ -1215,8 +1306,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 "Treat reach as distribution capacity only; engagement quality, "
                 "active contributors, retention, and content conversion still require direct telemetry."
                 if social_connected else
-                "X and Reddit community metrics are not connected. No audience-size, engagement, "
-                "sentiment, or community-quality claim is made, and the missing values are not zero."
+                social_availability + " No audience-size, engagement, sentiment, or "
+                "community-quality claim is made."
             )
             if is_compact:
                 details = {
@@ -1230,7 +1321,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
                     ),
                     "holder_distribution": (
                         f"Activity spans {pair_count} pairs; community distribution across X, Reddit, "
-                        "Telegram, and Discord is not connected."
+                        "Telegram, and Discord is not yet verified."
                     ),
                     "social_volume": social_detail,
                     "social_trending": (
@@ -1328,13 +1419,51 @@ to the requested writing style, but never alter, omit, or invent factual market 
             recommendation = recs.get(risk, "Insufficient data")
 
         data_gaps = []
-        if not social_connected:
+        if x_state != "ready" and twitter_followers is None and x_mentions is None:
             data_gaps.append({
-                "source": "X, Reddit, and channel-level community metrics",
-                "status": "not_connected",
+                "source": "X community metrics",
+                "status": (
+                    "connected_no_data"
+                    if x_state == "connected_no_data"
+                    else "not_connected"
+                ),
                 "impact": (
-                    "Audience size, engagement quality, sentiment, retention, and "
-                    "content performance cannot be concluded from the current sources."
+                    "X identity is connected, but no asset-level metric snapshot was returned. "
+                    "Check the X API access tier and tweet.read permissions; audience size, "
+                    "engagement quality, and sentiment remain unverified."
+                    if x_state == "connected_no_data" else
+                    "Connect X to collect wallet-authorized asset-level conversation signals. "
+                    "Audience size, engagement quality, and sentiment remain unverified."
+                ),
+            })
+        if telegram_state != "ready" and telegram_members is None:
+            telegram_status = (
+                "action_required" if telegram_state == "group_not_bound"
+                else "connected_no_data" if telegram_state == "connected_no_data"
+                else "not_connected"
+            )
+            telegram_impact = (
+                "Telegram identity is connected. Bind the operated group or channel with the "
+                "generated /connect code before member metrics can be collected."
+                if telegram_state == "group_not_bound" else
+                "Telegram identity and community are connected, but the latest member-count "
+                "sync is unavailable. Verify that the Bot remains in the community."
+                if telegram_state == "connected_no_data" else
+                "Connect Telegram identity and bind an operated group or channel to collect "
+                "member metrics."
+            )
+            data_gaps.append({
+                "source": "Telegram community metrics",
+                "status": telegram_status,
+                "impact": telegram_impact,
+            })
+        if reddit_subscribers is None:
+            data_gaps.append({
+                "source": "Reddit community metrics",
+                "status": "not_configured",
+                "impact": (
+                    "Reddit ingestion is not configured in this release; subscriber, post, "
+                    "comment, and sentiment signals are therefore unavailable."
                 ),
             })
         data_gaps.append({
@@ -1348,7 +1477,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             executive_conclusion = (
                 "Ops Verdict: treat this community as a validation sprint, not a scaled "
                 "campaign yet. Transaction activity offers a directional attention signal, "
-                "but community telemetry is not connected, so first establish the audience "
+                "but verified community telemetry is not available yet, so first establish the audience "
                 "baseline and test one repeatable participation loop."
                 if not social_connected else
                 "Ops Verdict: the available audience and activity signals justify a focused "
@@ -1356,8 +1485,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 "measure qualified contributors rather than raw impressions."
             )
             recommendation = (
-                "Start with a seven-day community validation sprint. Connect X and Reddit "
-                "analytics, map the active conversation, publish one native meme prompt, run "
+                "Start with a seven-day community validation sprint. Complete any remaining "
+                "social metric setup, map the active conversation, publish one native meme prompt, run "
                 "a live interaction, and review contributor conversion before committing more "
                 "operating resources."
             )
@@ -1374,14 +1503,18 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 {
                     "title": "Community Evidence & Gaps",
                     "content": (
-                        "X/Reddit metrics are not connected. Establish follower, engagement, "
-                        "active-contributor, retention, and content-baseline measurements before "
-                        "claiming community strength."
+                        social_availability + " Establish engagement, active-contributor, "
+                        "retention, and content-baseline measurements before claiming community strength."
                         if not social_connected else
                         "Connected audience size is a distribution signal; validate engagement "
                         "quality, active contributors, retention, and content conversion next."
                     ),
-                    "status": "not_connected" if not social_connected else "verified",
+                    "status": (
+                        "connected_no_data"
+                        if social_binding_connected and not social_connected
+                        else "not_connected" if not social_connected
+                        else "verified"
+                    ),
                 },
                 {
                     "title": "Operating Opportunity",
@@ -1412,7 +1545,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             key_inferences = [
                 {
                     "inference": "There is observable attention, but community quality remains unverified.",
-                    "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'connected' if social_connected else 'not connected'}.",
+                    "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'verified' if social_connected else 'identity connected but awaiting metrics' if social_binding_connected else 'not connected'}.",
                     "confidence": "medium" if social_connected else "low",
                 },
                 {

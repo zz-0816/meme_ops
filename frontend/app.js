@@ -247,7 +247,13 @@ function handleSocialReturn() {
     const reason = url.searchParams.get('reason');
     setTimeout(() => {
         if (status === 'connected') showToast(`${provider === 'x' ? 'X' : 'Telegram'} connected successfully.`);
-        else alert(`${provider === 'x' ? 'X' : 'Telegram'} connection ${status}: ${reason || 'authorization was not completed'}`);
+        else {
+            let message = reason || 'authorization was not completed';
+            if (provider === 'x' && /401|unauthorized|token exchange/i.test(message)) {
+                message = 'X rejected the token exchange. The project administrator must verify that Railway X_CLIENT_ID and X_CLIENT_SECRET come from the same X app and that its callback URL matches APP_PUBLIC_URL exactly.';
+            }
+            alert(`${provider === 'x' ? 'X' : 'Telegram'} connection ${status}: ${message}`);
+        }
         updateTopConnectionStatus();
     }, 150);
     url.searchParams.delete('social');
@@ -477,30 +483,16 @@ async function createComparisonReport() {
     const reportStyle = document.getElementById('comparisonStyle')?.value.trim()
         || 'Detailed horizontal comparison with evidence and limitations';
     closeComparisonPersonaDialog();
-    showLoading(true);
-    try {
-        const response = await fetch(`${API_BASE}/api/comparisons`, {
-            method: 'POST',
-            headers: apiHeaders(true),
-            body: JSON.stringify({
-                watchlist_ids: ids,
-                persona,
-                report_style: reportStyle,
-            }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Unable to generate comparison');
+    const jobId = await startComparisonJob({
+        watchlist_ids: ids,
+        persona,
+        report_style: reportStyle,
+    });
+    if (jobId) {
         compareMode = false;
         selectedWatchlist.clear();
         state.currentPersona = persona;
         await renderSidebar();
-        const container = ensureWorkspaceResults();
-        container.innerHTML = '';
-        renderComparisonReport(data.report, data.comparison_id, new Date().toISOString());
-    } catch (error) {
-        alert(`Comparison failed: ${error.message}`);
-    } finally {
-        showLoading(false);
     }
 }
 
@@ -1563,7 +1555,10 @@ async function submitAnalysis() {
 function persistAnalysisJobs() {
     localStorage.setItem(
         'meme_ops_analysis_jobs',
-        JSON.stringify([...state.analysisJobs.keys()])
+        JSON.stringify([...state.analysisJobs.values()].map(job => ({
+            job_id: job.job_id,
+            kind: job.kind || 'analysis',
+        })))
     );
 }
 
@@ -1572,9 +1567,16 @@ function restoreAnalysisJobs() {
     let ids = [];
     try { ids = JSON.parse(localStorage.getItem('meme_ops_analysis_jobs') || '[]'); }
     catch (error) { ids = []; }
-    ids.slice(0, 5).forEach(jobId => {
+    ids.slice(0, 5).forEach(saved => {
+        const jobId = typeof saved === 'string' ? saved : saved.job_id;
+        const kind = typeof saved === 'string' ? 'analysis' : (saved.kind || 'analysis');
+        if (!jobId) return;
         state.analysisJobs.set(jobId, {
-            job_id: jobId, status: 'loading', progress: 0, stage: 'Restoring analysis',
+            job_id: jobId,
+            kind,
+            status: 'loading',
+            progress: 0,
+            stage: kind === 'comparison' ? 'Restoring comparison' : 'Restoring analysis',
         });
         pollAnalysisJob(jobId);
     });
@@ -1592,6 +1594,7 @@ async function startAnalysisJob(request, options = {}) {
         });
         const job = await response.json();
         if (!response.ok) throw new Error(job.detail || 'Unable to start analysis');
+        job.kind = 'analysis';
         job.auto_open = state.currentTab === 'analysis';
         job.switching_from = options.switchingFrom || null;
         state.analysisJobs.set(job.job_id, job);
@@ -1611,16 +1614,45 @@ async function startAnalysisJob(request, options = {}) {
     }
 }
 
+async function startComparisonJob(request) {
+    try {
+        const response = await fetch(`${API_BASE}/api/comparison/jobs`, {
+            method: 'POST',
+            headers: apiHeaders(true),
+            body: JSON.stringify(request),
+        });
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.detail || 'Unable to start comparison');
+        job.kind = 'comparison';
+        job.auto_open = state.currentTab === 'analysis';
+        state.analysisJobs.set(job.job_id, job);
+        persistAnalysisJobs();
+        renderAnalysisJobDock();
+        renderInlineAnalysisProgress(job);
+        showToast('Comparison started. You can continue using other pages.');
+        pollAnalysisJob(job.job_id);
+        return job.job_id;
+    } catch (error) {
+        alert('Comparison failed: ' + error.message);
+        return null;
+    }
+}
+
 async function pollAnalysisJob(jobId) {
     if (!state.token || !state.analysisJobs.has(jobId)) return;
     try {
-        const response = await fetch(`${API_BASE}/api/analysis/jobs/${jobId}`, {
+        const previous = state.analysisJobs.get(jobId) || {};
+        const jobKind = previous.kind || 'analysis';
+        const jobEndpoint = jobKind === 'comparison' ? 'comparison' : 'analysis';
+        const response = await fetch(`${API_BASE}/api/${jobEndpoint}/jobs/${jobId}`, {
             headers: apiHeaders(),
         });
         const job = await response.json();
-        if (!response.ok) throw new Error(job.detail || 'Analysis job is unavailable');
-        const previous = state.analysisJobs.get(jobId) || {};
+        if (!response.ok) throw new Error(
+            job.detail || `${jobKind === 'comparison' ? 'Comparison' : 'Analysis'} job is unavailable`
+        );
         Object.assign(job, {
+            kind: job.kind || jobKind,
             auto_open: previous.auto_open,
             switching_from: previous.switching_from,
         });
@@ -1635,11 +1667,13 @@ async function pollAnalysisJob(jobId) {
             if (state.currentTab === 'analysis' && job.auto_open !== false) {
                 showCompletedAnalysisJob(jobId);
             } else {
-                showToast('Your analysis report is ready. Select View report when convenient.');
+                showToast(`${job.kind === 'comparison' ? 'Your comparison' : 'Your analysis report'} is ready. Select View report when convenient.`);
             }
             return;
         }
-        if (job.status === 'failed') showToast(job.error || 'Analysis failed.');
+        if (job.status === 'failed') showToast(
+            job.error || `${job.kind === 'comparison' ? 'Comparison' : 'Analysis'} failed.`
+        );
         if (job.status === 'cancelled') setTimeout(() => dismissAnalysisJob(jobId), 1800);
     } catch (error) {
         const job = state.analysisJobs.get(jobId);
@@ -1662,8 +1696,9 @@ function renderInlineAnalysisProgress(job) {
         card = document.getElementById(`analysis-job-card-${job.job_id}`);
     }
     const terminal = ['failed', 'cancelled'].includes(job.status);
+    const jobLabel = job.kind === 'comparison' ? 'BACKGROUND COMPARISON' : 'BACKGROUND ANALYSIS';
     card.innerHTML = `
-        <div><span class="eyebrow">BACKGROUND ANALYSIS</span><strong>${escapeHtml(job.stage || 'Working')}</strong></div>
+        <div><span class="eyebrow">${jobLabel}</span><strong>${escapeHtml(job.stage || 'Working')}</strong></div>
         <div class="analysis-job-progress"><i style="width:${Number(job.progress || 0)}%"></i></div>
         <span>${Number(job.progress || 0)}%</span>
         ${terminal
@@ -1679,8 +1714,9 @@ function renderAnalysisJobDock() {
     dock.innerHTML = jobs.map(job => {
         const complete = job.status === 'completed';
         const terminal = ['failed', 'cancelled'].includes(job.status);
+        const isComparison = job.kind === 'comparison';
         return `<article class="analysis-job-dock-item ${complete ? 'is-ready' : ''}">
-            <div><strong>${complete ? 'Report ready' : escapeHtml(job.stage || 'Analysis')}</strong><span>${complete ? personaLabel(job.source_request?.persona) : `${Number(job.progress || 0)}%`}</span></div>
+            <div><strong>${complete ? (isComparison ? 'Comparison ready' : 'Report ready') : escapeHtml(job.stage || (isComparison ? 'Comparison' : 'Analysis'))}</strong><span>${complete ? personaLabel(job.source_request?.persona) : `${Number(job.progress || 0)}%`}</span></div>
             <div class="analysis-job-progress"><i style="width:${Number(job.progress || 0)}%"></i></div>
             ${complete
                 ? `<button onclick="showCompletedAnalysisJob('${job.job_id}')">View report</button>`
@@ -1700,12 +1736,13 @@ async function cancelAnalysisJob(jobId) {
         renderInlineAnalysisProgress(job);
     }
     try {
-        await fetch(`${API_BASE}/api/analysis/jobs/${jobId}`, {
+        const jobEndpoint = job?.kind === 'comparison' ? 'comparison' : 'analysis';
+        await fetch(`${API_BASE}/api/${jobEndpoint}/jobs/${jobId}`, {
             method: 'DELETE', headers: apiHeaders(),
         });
         setTimeout(() => pollAnalysisJob(jobId), 250);
     } catch (error) {
-        showToast('Unable to stop this analysis.');
+        showToast(`Unable to stop this ${job?.kind === 'comparison' ? 'comparison' : 'analysis'}.`);
     }
 }
 
@@ -1725,7 +1762,15 @@ function showCompletedAnalysisJob(jobId) {
     if (location.hash !== '#/analysis') history.pushState(null, '', '#/analysis');
     if (!document.getElementById('analysisResults')) renderAnalysisShell();
     ensureAnalysisResults().innerHTML = '';
-    renderAnalysisResult(job.result);
+    if (job.kind === 'comparison') {
+        renderComparisonReport(
+            job.result.report,
+            job.result.comparison_id,
+            job.result.created_at || new Date().toISOString(),
+        );
+    } else {
+        renderAnalysisResult(job.result);
+    }
     dismissAnalysisJob(jobId);
     renderSidebar();
 }
@@ -2269,6 +2314,13 @@ function socialConfigurationMessage(providerName, provider, encryptionConfigured
     if (providerName === 'x' && provider.client_id_configured === false) {
         missing.push('X_CLIENT_ID');
     }
+    if (
+        providerName === 'x'
+        && provider.client_secret_configured === false
+        && provider.public_client !== true
+    ) {
+        missing.push('X_CLIENT_SECRET');
+    }
     if (providerName === 'telegram') {
         if (provider.bot_username_configured === false) missing.push('TELEGRAM_BOT_USERNAME');
         if (provider.bot_token_configured === false) missing.push('TELEGRAM_BOT_TOKEN');
@@ -2303,6 +2355,7 @@ function socialConnectionCards(data, prominent = false) {
             : `<div class="social-setup-actions">
                 <span class="social-setup-badge">Setup required</span>
                 <button class="social-help-link" onclick="openTelegramSetupGuide()">Setup guide →</button>
+                <button class="social-help-link" onclick="refreshTelegramSetup()">Check again</button>
                </div>`;
     const communities = data.communities || [];
     return `
@@ -2432,6 +2485,10 @@ function openTelegramSetupGuide() {
                 <div><strong>Telegram connection setup</strong><p>Identity binding cannot work until the server can verify the Telegram login signature.</p></div>
                 <button onclick="document.getElementById('telegramSetupOverlay').remove()">×</button>
             </div>
+            <div class="telegram-admin-notice">
+                <strong>Project administrator action</strong>
+                <p>Regular users never paste a Bot Token into meme_ops. The administrator configures one shared project bot once; every wallet user then receives a one-click Connect Telegram button.</p>
+            </div>
             <ol>
                 <li>Open <strong>@BotFather</strong>, select your bot, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
                 <li>In Railway Variables set <code>TELEGRAM_BOT_USERNAME</code>, <code>TELEGRAM_BOT_TOKEN</code>, and <code>TELEGRAM_WEBHOOK_SECRET</code>.</li>
@@ -2439,10 +2496,38 @@ function openTelegramSetupGuide() {
             </ol>
             <div class="settings-actions">
                 <a class="btn-small" href="https://core.telegram.org/widgets/login" target="_blank" rel="noopener noreferrer">Official login guide</a>
+                <a class="btn-small" href="https://railway.com/dashboard" target="_blank" rel="noopener noreferrer">Open Railway</a>
                 <a class="btn btn-primary" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open @BotFather</a>
+                <button class="btn btn-primary" onclick="refreshTelegramSetup()">Check server setup</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);
+}
+
+async function refreshTelegramSetup() {
+    try {
+        const response = await fetch(`${API_BASE}/api/social/provider`);
+        const status = await response.json();
+        if (!response.ok) throw new Error('Unable to read server configuration');
+        if (status.telegram?.login_configured) {
+            document.getElementById('telegramSetupOverlay')?.remove();
+            if (document.getElementById('socialConnections')) {
+                await loadSocialConnections('socialConnections');
+            }
+            if (document.getElementById('overviewSocialConnections')) {
+                await loadSocialConnections('overviewSocialConnections', true);
+            }
+            showToast('Telegram server setup is ready. Select Connect Telegram.');
+            return;
+        }
+        const missing = [];
+        if (!status.telegram?.bot_username_configured) missing.push('TELEGRAM_BOT_USERNAME');
+        if (!status.telegram?.bot_token_configured) missing.push('TELEGRAM_BOT_TOKEN');
+        if (!status.telegram?.webhook_configured) missing.push('TELEGRAM_WEBHOOK_SECRET');
+        showToast(`Telegram setup is still incomplete: ${missing.join(', ') || 'redeploy required'}.`);
+    } catch (error) {
+        showToast(error.message || 'Unable to refresh Telegram setup.');
+    }
 }
 
 async function disconnectSocial(provider) {

@@ -93,6 +93,9 @@ def social_provider_status() -> dict:
     )
     x_client_id_configured = bool(os.getenv("X_CLIENT_ID", "").strip())
     x_client_secret_configured = bool(os.getenv("X_CLIENT_SECRET", "").strip())
+    x_public_client = os.getenv(
+        "X_OAUTH_PUBLIC_CLIENT", "false"
+    ).strip().lower() == "true"
     x_bearer_configured = bool(os.getenv("X_BEARER_TOKEN", "").strip())
     telegram_token_configured = bool(
         os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -106,10 +109,14 @@ def social_provider_status() -> dict:
     return {
         "encryption_configured": encryption_configured,
         "x": {
-            "oauth_configured": x_client_id_configured,
+            "oauth_configured": (
+                x_client_id_configured
+                and (x_client_secret_configured or x_public_client)
+            ),
             "shared_collector_configured": x_bearer_configured,
             "client_id_configured": x_client_id_configured,
             "client_secret_configured": x_client_secret_configured,
+            "public_client": x_public_client,
             "bearer_token_configured": x_bearer_configured,
             "mode": "official-api",
         },
@@ -194,6 +201,16 @@ def begin_x_connection(
     client_id = os.getenv("X_CLIENT_ID", "").strip()
     if not client_id:
         raise SocialConfigurationError("X_CLIENT_ID is not configured")
+    client_secret = os.getenv("X_CLIENT_SECRET", "").strip()
+    public_client = os.getenv(
+        "X_OAUTH_PUBLIC_CLIENT", "false"
+    ).strip().lower() == "true"
+    if not client_secret and not public_client:
+        raise SocialConfigurationError(
+            "X_CLIENT_SECRET is not configured. Set it in Railway for a Web App, "
+            "or set X_OAUTH_PUBLIC_CLIENT=true only when the X app is explicitly "
+            "configured as a public PKCE client."
+        )
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode("ascii")).digest()
@@ -278,6 +295,12 @@ async def complete_x_connection(
         token_response = await client.post(
             f"{X_API_URL}/oauth2/token", data=data, headers=headers, auth=auth,
         )
+        if token_response.status_code == 401:
+            raise SocialConfigurationError(
+                "X token exchange was rejected (401). Verify that Railway "
+                "X_CLIENT_ID and X_CLIENT_SECRET belong to the same X app and "
+                "that its callback URL exactly matches APP_PUBLIC_URL."
+            )
         token_response.raise_for_status()
         tokens = token_response.json()
         user_response = await client.get(
@@ -717,6 +740,29 @@ def latest_social_context(
     conn = get_connection()
     try:
         owner = owner_address.lower() if owner_address else None
+        connections: dict[str, dict] = {}
+        telegram_communities: list[dict] = []
+        if owner:
+            connections = {
+                str(row["provider"]): dict(row)
+                for row in conn.execute(
+                    """SELECT provider, username, scopes, expires_at, status,
+                              metadata_json
+                       FROM social_connections
+                       WHERE owner_address = ? AND status = 'connected'""",
+                    (owner,),
+                ).fetchall()
+            }
+            telegram_communities = [
+                dict(row) for row in conn.execute(
+                    """SELECT id, community_name, asset_key, status, last_sync_at
+                       FROM social_communities
+                       WHERE owner_address = ? AND provider = 'telegram'
+                         AND status = 'connected'
+                         AND (asset_key = ? OR asset_key IS NULL)""",
+                    (owner, asset_key),
+                ).fetchall()
+            ]
         metrics = [
             dict(row) for row in conn.execute(
                 """SELECT m.* FROM social_metric_snapshots m
@@ -760,9 +806,46 @@ def latest_social_context(
             item["raw_summary"] = _loads(item.pop("raw_summary_json", None), {})
         for item in documents:
             item["keywords"] = _loads(item.pop("keywords_json", None), [])
+        metric_providers = {
+            str(item.get("provider") or "").lower() for item in metrics
+        }
+        x_identity = "x" in connections
+        telegram_identity = "telegram" in connections
+        provider_states = {
+            "x": {
+                "identity_connected": x_identity,
+                "metrics_available": "x" in metric_providers,
+                "status": (
+                    "ready" if "x" in metric_providers
+                    else "connected_no_data" if x_identity
+                    else "not_connected"
+                ),
+                "username": connections.get("x", {}).get("username"),
+            },
+            "telegram": {
+                "identity_connected": telegram_identity,
+                "community_count": len(telegram_communities),
+                "metrics_available": "telegram" in metric_providers,
+                "status": (
+                    "ready" if "telegram" in metric_providers
+                    else "group_not_bound"
+                    if telegram_identity and not telegram_communities
+                    else "connected_no_data" if telegram_identity
+                    else "not_connected"
+                ),
+                "username": connections.get("telegram", {}).get("username"),
+            },
+            "reddit": {
+                "identity_connected": False,
+                "metrics_available": False,
+                "status": "not_configured",
+            },
+        }
         return {
             "asset_key": asset_key,
             "connected": bool(metrics),
+            "binding_connected": x_identity or telegram_identity,
+            "providers": provider_states,
             "metrics": metrics,
             "rag_documents": documents,
         }
@@ -1140,15 +1223,29 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
     upsert_social_asset(asset, rank=rank)
     context = latest_social_context(asset_key, owner_address=owner_address)
     if not context["connected"] and owner_address:
-        has_connection = _get_connection(owner_address, "x") or _get_connection(owner_address, "telegram")
+        has_connection = bool(context.get("binding_connected"))
         if has_connection:
             try:
                 await SocialCollector().collect_asset(asset, owner_address)
                 context = latest_social_context(asset_key, owner_address=owner_address)
             except Exception as error:
+                # Preserve the verified identity-binding state. A provider plan,
+                # permission, or group setup failure is not the same as an
+                # unbound account and must be reported separately.
+                context = latest_social_context(
+                    asset_key, owner_address=owner_address,
+                )
                 context["collection_error"] = str(error)
-    context["status"] = "connected" if context["connected"] else "not-connected"
-    context["requires_user_binding"] = not context["connected"]
+    context["status"] = (
+        "ready" if context["connected"]
+        else "connected-no-data" if context.get("binding_connected")
+        else "not-connected"
+    )
+    context["requires_user_binding"] = not context.get("binding_connected", False)
+    context["requires_telegram_group"] = (
+        (context.get("providers") or {}).get("telegram", {}).get("status")
+        == "group_not_bound"
+    )
     raw_data["social"] = context
     if context["connected"]:
         raw_data.setdefault("_sources", []).append("Social intelligence")

@@ -1,13 +1,15 @@
 import os
+import copy
 import unittest
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
+import agent as agent_module
 from agent import MemeOpsAgent
 from comparison import (
     _deterministic_comparison, build_comparison_report, comparison_title,
@@ -210,6 +212,33 @@ class AnalysisQualityTests(unittest.TestCase):
         self.assertNotIn("0 x followers", social["detail"].lower())
         self.assertEqual(report["data_gaps"][0]["status"], "not_connected")
 
+    def test_bound_social_identity_uses_connected_no_data_instead_of_not_connected(self):
+        raw = raw_fixture()
+        raw["coingecko"]["community_data"] = {}
+        raw["social"] = {
+            "connected": False,
+            "binding_connected": True,
+            "metrics": [],
+            "rag_documents": [],
+            "providers": {
+                "x": {"status": "connected_no_data", "identity_connected": True},
+                "telegram": {"status": "group_not_bound", "identity_connected": True},
+                "reddit": {"status": "not_configured", "identity_connected": False},
+            },
+        }
+        self.agent.set_persona("operator")
+        report = self.agent._fallback_analyze(
+            "Pepe solana", raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        gaps = {item["source"]: item for item in report["data_gaps"]}
+        self.assertEqual(gaps["X community metrics"]["status"], "connected_no_data")
+        self.assertEqual(gaps["Telegram community metrics"]["status"], "action_required")
+        self.assertEqual(gaps["Reddit community metrics"]["status"], "not_configured")
+        rendered = " ".join(item["impact"] for item in gaps.values()).lower()
+        self.assertIn("identity is connected", rendered)
+        self.assertNotIn("x, reddit, and channel-level", rendered)
+
     def test_operator_model_cannot_label_community_when_social_is_disconnected(self):
         raw = raw_fixture()
         raw["coingecko"]["community_data"] = {}
@@ -357,6 +386,83 @@ class AnalysisQualityTests(unittest.TestCase):
             with self.assertRaises(OnchainMetadataTooLarge) as caught:
                 prepare_onchain_metadata({"image": "x" * 1400})
         self.assertGreater(caught.exception.payload_bytes, 1200)
+
+
+class AnalysisCacheSocialRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        agent_module._ANALYSIS_DATA_CACHE.clear()
+
+    async def asyncTearDown(self):
+        agent_module._ANALYSIS_DATA_CACHE.clear()
+
+    async def test_market_cache_never_reuses_wallet_social_state(self):
+        market = raw_fixture()
+        market["coingecko"]["community_data"] = {}
+        calls = 0
+
+        async def current_social(raw_data, owner_address):
+            nonlocal calls
+            calls += 1
+            result = copy.deepcopy(raw_data)
+            if calls == 1:
+                result["social"] = {
+                    "connected": False,
+                    "binding_connected": False,
+                    "metrics": [],
+                    "rag_documents": [],
+                    "providers": {
+                        "x": {"status": "not_connected"},
+                        "telegram": {"status": "not_connected"},
+                        "reddit": {"status": "not_configured"},
+                    },
+                }
+            else:
+                result["social"] = {
+                    "connected": True,
+                    "binding_connected": True,
+                    "metrics": [
+                        {"provider": "x", "mentions_24h": 250, "confidence": 0.8}
+                    ],
+                    "rag_documents": [],
+                    "providers": {
+                        "x": {"status": "ready", "identity_connected": True},
+                        "telegram": {"status": "not_connected"},
+                        "reddit": {"status": "not_configured"},
+                    },
+                }
+                result.setdefault("_sources", []).append("Social intelligence")
+            return result
+
+        report_agent = MemeOpsAgent()
+        report_agent.set_persona("operator")
+        fetch = AsyncMock(return_value=market)
+        with (
+            patch.object(report_agent, "_fetch_raw_data", fetch),
+            patch.object(
+                agent_module, "enrich_raw_data_with_social",
+                side_effect=current_social,
+            ) as enrich,
+            patch.object(agent_module, "DEEPSEEK_API_KEY", ""),
+        ):
+            first = await report_agent.analyze(
+                "Pepe solana", owner_address="0xaaa",
+            )
+            second = await report_agent.analyze(
+                "Pepe solana", owner_address="0xaaa",
+            )
+
+        self.assertFalse(first["data_cache"]["hit"])
+        self.assertTrue(second["data_cache"]["hit"])
+        self.assertEqual(fetch.await_count, 1)
+        self.assertEqual(enrich.await_count, 2)
+        self.assertIn(
+            "X community metrics",
+            {item["source"] for item in first["data_gaps"]},
+        )
+        self.assertNotIn(
+            "X community metrics",
+            {item["source"] for item in second["data_gaps"]},
+        )
 
 
 class ComparisonPipelineTests(unittest.IsolatedAsyncioTestCase):
