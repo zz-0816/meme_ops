@@ -125,6 +125,13 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or ""
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "90"))
+DEEPSEEK_MAX_TOKENS_STANDARD = max(
+    1600, int(os.getenv("DEEPSEEK_MAX_TOKENS_STANDARD", "3000"))
+)
+DEEPSEEK_MAX_TOKENS_EXTENDED = max(
+    DEEPSEEK_MAX_TOKENS_STANDARD,
+    int(os.getenv("DEEPSEEK_MAX_TOKENS_EXTENDED", "4200")),
+)
 
 
 def analysis_provider_status() -> dict:
@@ -177,6 +184,16 @@ class MemeOpsAgent:
         owner_address: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> dict:
+        analysis_started = time.monotonic()
+        stage_started = analysis_started
+        performance_ms: dict[str, int] = {}
+
+        def finish_stage(name: str) -> None:
+            nonlocal stage_started
+            now = time.monotonic()
+            performance_ms[name] = round((now - stage_started) * 1000)
+            stage_started = now
+
         def progress(value: int, stage: str) -> None:
             if progress_callback:
                 progress_callback(value, stage)
@@ -237,6 +254,7 @@ class MemeOpsAgent:
                 )
         except Exception as e:
             raw_data = {"query": prompt, "dexscreener": {}, "coingecko": {}, "_sources": [], "_error": str(e)}
+        finish_stage("market_data")
 
         # Always resolve private social evidence after the market cache. This
         # makes a newly connected X account or Telegram community visible on
@@ -258,6 +276,7 @@ class MemeOpsAgent:
                 "rag_documents": [],
                 "collection_error": str(error),
             }
+        finish_stage("social_data")
 
         # 2. 用 LLM 打分 + 生成报告
         progress(46, "Building the persona-specific evidence model")
@@ -280,6 +299,7 @@ class MemeOpsAgent:
             report["_llm_error"] = str(e)
             report["generation_mode"] = "rules"
             report["generation_model"] = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None
+        finish_stage("report_generation")
 
         progress(72, "Validating facts and report structure")
         report = self._enrich_report_content(report, raw_data, request_intent)
@@ -302,6 +322,9 @@ class MemeOpsAgent:
             "hit": cache_hit,
             "ttl_seconds": ANALYSIS_DATA_CACHE_SECONDS,
         }
+        finish_stage("validation")
+        performance_ms["total"] = round((time.monotonic() - analysis_started) * 1000)
+        report["performance_ms"] = performance_ms
 
         # 强制设置 chain：优先用链提示，其次用 DexScreener 返回的 chainId
         token = report.get("token", {})
@@ -641,7 +664,11 @@ to the requested writing style, but never alter, omit, or invent factual market 
         llm = self._get_llm()
         try:
             profile = intent.get("writing_profile") or {}
-            max_tokens = 6500 if profile.get("length") == "extended" else 4096
+            max_tokens = (
+                DEEPSEEK_MAX_TOKENS_EXTENDED
+                if profile.get("length") == "extended"
+                else DEEPSEEK_MAX_TOKENS_STANDARD
+            )
             last_error = None
             previous_content = None
             for attempt in range(2):
@@ -1100,14 +1127,18 @@ to the requested writing style, but never alter, omit, or invent factual market 
         reddit_subscribers = reddit_raw if isinstance(reddit_raw, (int, float)) and reddit_raw > 0 else None
         social_context = raw_data.get("social") or {}
         social_metrics = social_context.get("metrics") or []
-        x_mentions = sum(
-            int(item.get("mentions_24h") or 0)
-            for item in social_metrics if item.get("provider") == "x"
-        ) or None
-        telegram_members = sum(
-            int(item.get("members") or 0)
-            for item in social_metrics if item.get("provider") == "telegram"
-        ) or None
+        def aggregate_social_metric(provider: str, key: str) -> int | None:
+            values = [
+                int(item[key]) for item in social_metrics
+                if item.get("provider") == provider and item.get(key) is not None
+            ]
+            return sum(values) if values else None
+
+        x_mentions = aggregate_social_metric("x", "mentions_24h")
+        x_posts = aggregate_social_metric("x", "posts_24h")
+        x_engagements = aggregate_social_metric("x", "engagements_24h")
+        x_active_authors = aggregate_social_metric("x", "active_authors_24h")
+        telegram_members = aggregate_social_metric("telegram", "members")
         social_connected = bool(
             twitter_followers is not None
             or reddit_subscribers is not None
@@ -1159,16 +1190,25 @@ to the requested writing style, but never alter, omit, or invent factual market 
             if x_mentions is not None
             else 5.0
         )
+        social_evidence_parts = []
         if twitter_followers is not None:
-            social_reach_evidence = f"{twitter_followers:,.0f} connected X followers"
-        elif telegram_members is not None:
-            social_reach_evidence = (
+            social_evidence_parts.append(f"{twitter_followers:,.0f} connected X followers")
+        if x_mentions is not None:
+            social_evidence_parts.append(f"{x_mentions:,.0f} X mentions in the provider window")
+        elif x_posts is not None:
+            social_evidence_parts.append(f"{x_posts:,.0f} matched X posts in the provider window")
+        if x_active_authors is not None:
+            social_evidence_parts.append(f"{x_active_authors:,.0f} active X authors")
+        if x_engagements is not None:
+            social_evidence_parts.append(f"{x_engagements:,.0f} observed X engagements")
+        if telegram_members is not None:
+            social_evidence_parts.append(
                 f"{telegram_members:,.0f} members across connected Telegram communities"
             )
-        elif x_mentions is not None:
-            social_reach_evidence = f"{x_mentions:,.0f} X mentions in the provider window"
-        else:
-            social_reach_evidence = "No connected social audience metric"
+        social_reach_evidence = (
+            ", ".join(social_evidence_parts)
+            if social_evidence_parts else "No connected social audience metric"
+        )
         trend_score = min(10, round(total_volume_24h / 1_000_000 * 2, 1)) if total_volume_24h > 0 else 0
 
         scores = {"liquidity": liq_score, "holder_count": holder_score, "holder_distribution": dist_score,
@@ -1485,6 +1525,12 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 "measure qualified contributors rather than raw impressions."
             )
             recommendation = (
+                (
+                    f"Use the verified baseline ({social_reach_evidence}) to run a focused seven-day "
+                    "community validation sprint. Build the content theme around the current conversation, "
+                    "then compare contributor conversion and engagement against this baseline before scaling."
+                )
+                if social_connected else
                 "Start with a seven-day community validation sprint. Complete any remaining "
                 "social metric setup, map the active conversation, publish one native meme prompt, run "
                 "a live interaction, and review contributor conversion before committing more "
@@ -1494,6 +1540,13 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 {
                     "title": "What Is Trending",
                     "content": (
+                        (
+                            f"The connected social snapshot reports {social_reach_evidence}. "
+                            f"Alongside {total_txns_24h:,.0f} DEX transactions and "
+                            f"${total_volume_24h:,.0f} in 24h volume, this identifies a live attention "
+                            "window; review the matched posts before selecting a campaign narrative."
+                        )
+                        if social_connected else
                         f"{total_txns_24h:,.0f} DEX transactions and ${total_volume_24h:,.0f} "
                         "in 24h volume indicate current market attention, but they do not reveal "
                         "which narratives or community posts are driving it."
@@ -1538,7 +1591,11 @@ to the requested writing style, but never alter, omit, or invent factual market 
             action_plan = [
                 {
                     "day": day, "theme": theme, "actions": actions, "kpi": kpi,
-                    "dependency": "Connect community analytics for verified measurement",
+                    "dependency": (
+                        f"Measure lift against the connected baseline: {social_reach_evidence}"
+                        if social_connected else
+                        "Complete social metric collection for verified measurement"
+                    ),
                 }
                 for day, theme, actions, kpi in day_themes
             ]

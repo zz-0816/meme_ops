@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import asyncio
 import os
 import sys
 import tempfile
@@ -159,6 +160,58 @@ class SocialIntegrationTests(unittest.TestCase):
         self.assertTrue(social.verify_telegram_login(payload))
         payload["username"] = "mallory"
         self.assertFalse(social.verify_telegram_login(payload))
+
+    def test_telegram_recent_reusable_proof_is_not_rejected_after_ten_minutes(self):
+        payload = {
+            "id": "123",
+            "first_name": "Alice",
+            "username": "alice",
+            "auth_date": str(int(time.time()) - 3600),
+        }
+        check = "\n".join(f"{key}={payload[key]}" for key in sorted(payload))
+        secret = hashlib.sha256(b"123456:test-bot-token").digest()
+        payload["hash"] = hmac.new(
+            secret, check.encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        self.assertTrue(social.verify_telegram_login(payload))
+
+    def test_invalid_telegram_proof_does_not_consume_wallet_state(self):
+        state = social._save_oauth_state("0xaaa", "telegram")
+        with self.assertRaisesRegex(ValueError, "same @BotFather bot"):
+            social.complete_telegram_connection({
+                "state": state,
+                "id": "123",
+                "auth_date": str(int(time.time())),
+                "hash": "invalid",
+            })
+        pending = social._consume_oauth_state(state, "telegram")
+        self.assertEqual(pending["owner_address"], "0xaaa")
+
+    def test_telegram_bot_username_and_token_must_belong_to_same_bot(self):
+        class FakeResponse:
+            status_code = 200
+            content = b"{}"
+
+            @staticmethod
+            def json():
+                return {"ok": True, "result": {"id": 9, "username": "another_bot"}}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        social._TELEGRAM_BOT_VALIDATION_CACHE.clear()
+        with patch.object(social.httpx, "AsyncClient", return_value=FakeClient()):
+            with self.assertRaisesRegex(
+                social.SocialConfigurationError, "configuration mismatch",
+            ):
+                asyncio.run(social.validate_telegram_bot_configuration(force=True))
 
     def test_same_symbol_on_different_chains_has_different_asset_key(self):
         eth = social.make_asset_key("ethereum", "0xABC")

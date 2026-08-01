@@ -15,7 +15,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
@@ -52,6 +52,7 @@ from social import (
     latest_social_context, list_connections, list_social_assets,
     process_telegram_webhook, social_provider_status,
     start_social_scheduler, stop_social_scheduler,
+    validate_telegram_bot_configuration,
 )
 from models import (
     AnalyzeRequest, ComparisonRequest, LoginRequest,
@@ -199,7 +200,8 @@ async def api_analysis_provider_status():
 # ============ Social connections and intelligence ============
 
 @app.get("/api/social/provider")
-async def api_social_provider_status(request: Request):
+async def api_social_provider_status(request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     status = social_provider_status()
     status["public_app_url"] = (
         os.getenv("APP_PUBLIC_URL", "").strip()
@@ -240,6 +242,7 @@ async def api_x_callback(
 @app.post("/api/social/telegram/connect")
 async def api_connect_telegram(request: Request, user=Depends(get_current_user)):
     try:
+        await validate_telegram_bot_configuration()
         return begin_telegram_connection(user, str(request.base_url))
     except SocialConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error

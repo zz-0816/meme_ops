@@ -967,6 +967,39 @@ button.market-row:hover { background:var(--bg-hover); }
 .telegram-setup-guide code { color:var(--text);word-break:break-word; }
 .telegram-setup-guide .settings-actions { flex-wrap:wrap; }
 
+/* Telegram onboarding guide */
+.telegram-guide-page { width:min(980px,calc(100% - 28px));margin:24px auto 70px;display:grid;gap:20px; }
+.telegram-guide-hero { display:grid;grid-template-columns:auto auto 1fr;align-items:start;gap:16px;padding:26px;border:1px solid rgba(34,158,217,.35);border-radius:18px;background:linear-gradient(135deg,rgba(34,158,217,.13),rgba(108,99,255,.08)); }
+.telegram-guide-hero .social-brand-logo { width:52px;height:52px;filter:none!important;opacity:1!important; }
+.telegram-guide-hero h1 { margin:4px 0 7px;font-size:1.45rem; }
+.telegram-guide-hero p { max-width:720px;margin:0;color:var(--text-muted);font-size:.8rem;line-height:1.65; }
+.telegram-guide-summary { display:grid;grid-template-columns:minmax(220px,.75fr) minmax(320px,1.25fr);gap:18px;padding:20px;border:1px solid var(--border);border-radius:15px;background:var(--panel); }
+.telegram-guide-summary.is-ready { border-color:rgba(0,230,118,.42); }
+.telegram-guide-summary.is-missing { border-color:rgba(255,193,7,.42); }
+.telegram-last-error { padding:14px 16px;border:1px solid rgba(255,82,82,.42);border-radius:12px;background:rgba(255,82,82,.07); }
+.telegram-last-error strong { color:#ff8a80;font-size:.76rem; }
+.telegram-last-error p { margin:5px 0 0;color:var(--text-muted);font-size:.72rem;line-height:1.55; }
+.telegram-guide-summary>div>strong,.telegram-guide-summary>strong { font-size:.95rem; }
+.telegram-guide-summary p { margin:6px 0 0;color:var(--text-muted);font-size:.74rem;line-height:1.55; }
+.telegram-guide-summary>ul { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none; }
+.telegram-check { display:grid;grid-template-columns:24px 1fr;gap:8px;padding:9px;border-radius:10px;background:rgba(255,255,255,.025); }
+.telegram-check>span { display:grid;width:22px;height:22px;place-items:center;border-radius:50%;font-weight:800; }
+.telegram-check.is-ready>span { background:rgba(0,230,118,.14);color:var(--green); }
+.telegram-check.is-missing>span { background:rgba(255,193,7,.14);color:#ffd54f; }
+.telegram-check strong { font-size:.7rem; }
+.telegram-check p { margin:2px 0 0;font-size:.62rem; }
+.telegram-guide-grid { display:grid;gap:14px; }
+.telegram-guide-step { display:grid;grid-template-columns:46px 1fr;gap:15px;padding:21px;border:1px solid var(--border);border-radius:15px;background:var(--panel); }
+.step-number { display:grid;width:40px;height:40px;place-items:center;border-radius:12px;background:rgba(34,158,217,.15);color:#4fc3f7;font-size:1rem;font-weight:900; }
+.step-owner { color:#4fc3f7;font-size:.63rem;font-weight:800;letter-spacing:.09em; }
+.step-intro { margin:0 0 10px;color:var(--text-muted);font-size:.72rem;line-height:1.5; }
+.telegram-guide-step h2,.telegram-troubleshooting h2 { margin:5px 0 10px;font-size:1rem; }
+.telegram-guide-step ol,.telegram-troubleshooting ul { display:grid;gap:8px;margin:0;padding-left:20px;color:var(--text-muted);font-size:.75rem;line-height:1.6; }
+.telegram-guide-step code,.telegram-troubleshooting code { color:var(--text);word-break:break-word; }
+.guide-safety { margin:13px 0 0;padding:10px 12px;border-left:3px solid #ff5252;background:rgba(255,82,82,.07);color:var(--text-muted);font-size:.7rem;line-height:1.5; }
+.telegram-troubleshooting { padding:21px;border:1px solid rgba(255,193,7,.32);border-radius:15px;background:rgba(255,193,7,.05); }
+.telegram-guide-actions { display:flex;flex-wrap:wrap;align-items:center;gap:9px; }
+
 @media (max-width:768px) {
     .analysis-controls { top:53px; }
     .compose-fab { right:18px; bottom:20px; }
@@ -977,4 +1010,12 @@ button.market-row:hover { background:var(--bg-hover); }
     .analysis-job-card { grid-template-columns:1fr auto; }
     .analysis-job-card .analysis-job-progress { grid-column:1/-1; }
     .analysis-job-dock { right:16px;bottom:16px; }
+    .telegram-guide-page { width:min(100% - 18px,980px);margin-top:14px; }
+    .telegram-guide-hero { grid-template-columns:auto 1fr;padding:18px; }
+    .telegram-guide-hero .social-brand-logo { width:42px;height:42px; }
+    .telegram-guide-hero>div { grid-column:1/-1; }
+    .telegram-guide-summary { grid-template-columns:1fr; }
+    .telegram-guide-summary>ul { grid-template-columns:1fr; }
+    .telegram-guide-step { grid-template-columns:38px 1fr;padding:17px; }
+    .step-number { width:34px;height:34px; }
 }

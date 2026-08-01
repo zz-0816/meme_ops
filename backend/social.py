@@ -17,6 +17,7 @@ import json
 import math
 import os
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -31,6 +32,14 @@ X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize"
 X_API_URL = "https://api.x.com/2"
 TELEGRAM_BOT_API = "https://api.telegram.org"
 DEFAULT_SCOPES = "tweet.read users.read follows.read offline.access"
+TELEGRAM_LOGIN_MAX_AGE_SECONDS = max(
+    600, int(os.getenv("TELEGRAM_LOGIN_MAX_AGE_SECONDS", "86400"))
+)
+SOCIAL_INLINE_TIMEOUT_SECONDS = max(
+    2.0, float(os.getenv("SOCIAL_INLINE_TIMEOUT_SECONDS", "8"))
+)
+_TELEGRAM_BOT_VALIDATION_CACHE: dict[str, Any] = {}
+_BACKGROUND_COLLECTION_TASKS: set[asyncio.Task] = set()
 
 
 class SocialConfigurationError(RuntimeError):
@@ -343,33 +352,95 @@ def begin_telegram_connection(
     }
 
 
-def verify_telegram_login(payload: dict, bot_token: str | None = None) -> bool:
+async def validate_telegram_bot_configuration(force: bool = False) -> dict:
+    """Verify that the configured username and sealed token belong to one bot."""
+    username = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not username or not token:
+        raise SocialConfigurationError(
+            "TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN are required"
+        )
+    fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    cached_at = float(_TELEGRAM_BOT_VALIDATION_CACHE.get("checked_at", 0) or 0)
+    if (
+        not force
+        and _TELEGRAM_BOT_VALIDATION_CACHE.get("fingerprint") == fingerprint
+        and time.monotonic() - cached_at < 300
+    ):
+        return dict(_TELEGRAM_BOT_VALIDATION_CACHE["result"])
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{TELEGRAM_BOT_API}/bot{token}/getMe")
+        payload = response.json() if response.content else {}
+    except Exception as error:
+        raise SocialConfigurationError(
+            "Telegram could not verify the configured Bot Token. Try again after checking Railway connectivity."
+        ) from error
+    if response.status_code != 200 or not payload.get("ok"):
+        raise SocialConfigurationError(
+            "TELEGRAM_BOT_TOKEN was rejected by Telegram. Re-enter the current token from @BotFather."
+        )
+    actual = str((payload.get("result") or {}).get("username") or "").lstrip("@")
+    if actual.lower() != username.lower():
+        raise SocialConfigurationError(
+            f"Telegram configuration mismatch: TELEGRAM_BOT_USERNAME is @{username}, "
+            f"but TELEGRAM_BOT_TOKEN belongs to @{actual or 'unknown'}. Use values from the same bot."
+        )
+    result = {"username": actual, "bot_id": str((payload.get("result") or {}).get("id") or "")}
+    _TELEGRAM_BOT_VALIDATION_CACHE.update({
+        "fingerprint": fingerprint,
+        "checked_at": time.monotonic(),
+        "result": result,
+    })
+    return result
+
+
+def telegram_login_verification_error(
+    payload: dict, bot_token: str | None = None,
+) -> str | None:
     supplied_hash = str(payload.get("hash") or "")
     auth_date = str(payload.get("auth_date") or "")
     if not supplied_hash or not auth_date:
-        return False
+        return "Telegram did not return a complete login proof. Reopen Connect Telegram."
     try:
-        if abs(int(_utcnow().timestamp()) - int(auth_date)) > 600:
-            return False
+        age_seconds = abs(int(_utcnow().timestamp()) - int(auth_date))
+        if age_seconds > TELEGRAM_LOGIN_MAX_AGE_SECONDS:
+            return (
+                "Telegram login proof is expired. Close the Telegram authorization window "
+                "and start Connect Telegram again."
+            )
     except ValueError:
-        return False
+        return "Telegram returned an invalid login timestamp. Reopen Connect Telegram."
     data_check = "\n".join(
         f"{key}={payload[key]}"
         for key in sorted(payload)
         if key not in {"hash", "state"} and payload[key] is not None
     )
-    secret = hashlib.sha256(
-        (bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")).encode("utf-8")
-    ).digest()
+    configured_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not configured_token:
+        return "Telegram Bot Token is not configured on the server."
+    secret = hashlib.sha256(configured_token.encode("utf-8")).digest()
     expected = hmac.new(secret, data_check.encode("utf-8"), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, supplied_hash)
+    if not hmac.compare_digest(expected, supplied_hash):
+        return (
+            "Telegram signature does not match the configured Bot Token. Confirm that "
+            "TELEGRAM_BOT_USERNAME and TELEGRAM_BOT_TOKEN belong to the same @BotFather bot."
+        )
+    return None
+
+
+def verify_telegram_login(payload: dict, bot_token: str | None = None) -> bool:
+    return telegram_login_verification_error(payload, bot_token) is None
 
 
 def complete_telegram_connection(payload: dict) -> dict:
     state = str(payload.get("state") or "")
+    verification_error = telegram_login_verification_error(payload)
+    if verification_error:
+        raise ValueError(verification_error)
+    # Consume the one-time wallet state only after Telegram's proof is valid so
+    # a malformed callback cannot burn an otherwise usable login attempt.
     pending = _consume_oauth_state(state, "telegram")
-    if not verify_telegram_login(payload):
-        raise ValueError("Telegram login signature is invalid or expired")
     telegram_id = str(payload.get("id") or "")
     if not telegram_id:
         raise ValueError("Telegram identity is missing")
@@ -1031,7 +1102,7 @@ class SocialCollector:
                 payload = response.json()
                 engagements = None
                 active_authors = None
-                if int(asset.get("priority_tier") or 3) == 1:
+                if owner_address or int(asset.get("priority_tier") or 3) == 1:
                     detail_response = await client.get(
                         f"{X_API_URL}/tweets/search/recent",
                         headers={"Authorization": f"Bearer {token}"},
@@ -1225,9 +1296,34 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
     if not context["connected"] and owner_address:
         has_connection = bool(context.get("binding_connected"))
         if has_connection:
+            collection_task = asyncio.create_task(
+                SocialCollector().collect_asset(asset, owner_address)
+            )
+            _BACKGROUND_COLLECTION_TASKS.add(collection_task)
+
+            def finish_collection(task: asyncio.Task) -> None:
+                _BACKGROUND_COLLECTION_TASKS.discard(task)
+                if not task.cancelled():
+                    try:
+                        task.exception()
+                    except Exception:
+                        pass
+
+            collection_task.add_done_callback(finish_collection)
             try:
-                await SocialCollector().collect_asset(asset, owner_address)
+                await asyncio.wait_for(
+                    asyncio.shield(collection_task),
+                    timeout=SOCIAL_INLINE_TIMEOUT_SECONDS,
+                )
                 context = latest_social_context(asset_key, owner_address=owner_address)
+            except asyncio.TimeoutError:
+                # Keep collection running for the scheduler/RAG cache, but do
+                # not make the user wait through a slow social provider. The
+                # next report can consume the completed snapshot immediately.
+                context = latest_social_context(
+                    asset_key, owner_address=owner_address,
+                )
+                context["collection_pending"] = True
             except Exception as error:
                 # Preserve the verified identity-binding state. A provider plan,
                 # permission, or group setup failure is not the same as an

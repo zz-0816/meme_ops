@@ -246,15 +246,25 @@ function handleSocialReturn() {
     if (!provider || !status) return;
     const reason = url.searchParams.get('reason');
     setTimeout(() => {
-        if (status === 'connected') showToast(`${provider === 'x' ? 'X' : 'Telegram'} connected successfully.`);
+        if (status === 'connected') {
+            showToast(`${provider === 'x' ? 'X' : 'Telegram'} connected successfully.`);
+            if (provider === 'telegram') sessionStorage.removeItem('meme_ops_telegram_last_error');
+        }
         else {
             let message = reason || 'authorization was not completed';
             if (provider === 'x' && /401|unauthorized|token exchange/i.test(message)) {
                 message = 'X rejected the token exchange. The project administrator must verify that Railway X_CLIENT_ID and X_CLIENT_SECRET come from the same X app and that its callback URL matches APP_PUBLIC_URL exactly.';
             }
-            alert(`${provider === 'x' ? 'X' : 'Telegram'} connection ${status}: ${message}`);
+            if (provider === 'telegram' && /signature|bot token|expired|login proof/i.test(message)) {
+                message = /expired/i.test(message)
+                    ? 'The Telegram login proof expired. Close the old authorization window and select Connect Telegram again.'
+                    : 'Telegram could not verify this login. Reconnect once; if it repeats, the administrator must confirm that the configured username and sealed token belong to the same BotFather bot.';
+                sessionStorage.setItem('meme_ops_telegram_last_error', message);
+            }
+            showToast(`${provider === 'x' ? 'X' : 'Telegram'}: ${message}`);
         }
         updateTopConnectionStatus();
+        if (provider === 'telegram' && status === 'error') location.hash = '#/telegram-guide';
     }, 150);
     url.searchParams.delete('social');
     url.searchParams.delete('status');
@@ -286,6 +296,13 @@ function routeFromHash() {
         setActiveNav('profile');
         document.getElementById('sidebar').classList.remove('visible');
         renderProfileSettings();
+        return;
+    }
+    if (route === '#/telegram-guide') {
+        state.currentTab = 'telegram-guide';
+        setActiveNav(null);
+        document.getElementById('sidebar').classList.remove('visible');
+        renderTelegramGuidePage();
         return;
     }
     if (route.startsWith('#/community')) return switchTab('community', false);
@@ -508,7 +525,7 @@ async function loadComparisonDetail(comparisonId) {
         container.innerHTML = '';
         renderComparisonReport(data.report, data.id, data.created_at);
     } catch (error) {
-        alert(error.message);
+        showToast(error.message || 'Comparison report could not be loaded.');
     } finally {
         showLoading(false);
     }
@@ -1795,6 +1812,13 @@ function renderAnalysisResult(data) {
         ? `${escapeHtml(report.generation_model || 'DeepSeek')} analysis`
         : 'Rules-engine fallback';
     const generationClass = report.generation_mode === 'deepseek' ? 'model-live' : 'model-fallback';
+    const performance = report.performance_ms || {};
+    const performanceLabel = Number(performance.total) > 0
+        ? ` · ${(Number(performance.total) / 1000).toFixed(1)}s`
+        : '';
+    const performanceTitle = Number(performance.total) > 0
+        ? `Market ${(Number(performance.market_data || 0) / 1000).toFixed(1)}s · Social ${(Number(performance.social_data || 0) / 1000).toFixed(1)}s · Report ${(Number(performance.report_generation || 0) / 1000).toFixed(1)}s`
+        : '';
     document.querySelector('.analysis-controls')?.classList.add('results-mode');
 
     // ① 代币详情头部
@@ -1810,7 +1834,7 @@ function renderAnalysisResult(data) {
                             ? `<a class="contract-link" href="https://dexscreener.com/search?q=${encodeURIComponent(contractAddress)}" target="_blank" rel="noopener noreferrer" title="View ${contractAddress} on DexScreener">${shortenAddr(contractAddress)} ↗</a>`
                             : '—'}
                     </div>
-                    <div class="model-status ${generationClass}" title="${report._llm_error ? escapeHtml(report._llm_error) : ''}">${generationMode}</div>
+                    <div class="model-status ${generationClass}" title="${escapeHtml(report._llm_error || performanceTitle)}">${generationMode}${performanceLabel}</div>
                     ${report.asset_match === 'reference-only' ? '<div class="asset-match-warning">No exact DEX pair was found on the requested chain; unrelated assets were excluded and reference data is shown.</div>' : ''}
                 </div>
                 <button class="btn-small" onclick="addToWatchlistFromResult('${(token.name||'').replace(/'/g,"\\'")}','${(token.chain||data.chain||'unknown').replace(/'/g,"\\'")}','${(token.symbol||'').replace(/'/g,"\\'")}','${contractAddress.replace(/'/g,"\\'")}')" title="Add to watchlist">⭐</button>
@@ -2469,48 +2493,157 @@ async function connectSocialTelegram() {
         };
         document.getElementById('telegramWidgetMount').appendChild(script);
     } catch (error) {
-        alert(error.message);
+        showToast(error.message || 'Telegram connection could not start.');
+        if (/setup|token|username|telegram configuration/i.test(error.message || '')) {
+            location.hash = '#/telegram-guide';
+        }
     }
 }
 
 function openTelegramSetupGuide() {
-    document.getElementById('telegramSetupOverlay')?.remove();
-    const overlay = document.createElement('div');
-    overlay.className = 'quote-overlay';
-    overlay.id = 'telegramSetupOverlay';
-    overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
-    overlay.innerHTML = `
-        <div class="quote-dialog social-login-dialog telegram-setup-guide">
-            <div class="quote-header">
-                <div><strong>Telegram connection setup</strong><p>Identity binding cannot work until the server can verify the Telegram login signature.</p></div>
-                <button onclick="document.getElementById('telegramSetupOverlay').remove()">×</button>
-            </div>
-            <div class="telegram-admin-notice">
-                <strong>Project administrator action</strong>
-                <p>Regular users never paste a Bot Token into meme_ops. The administrator configures one shared project bot once; every wallet user then receives a one-click Connect Telegram button.</p>
-            </div>
-            <ol>
-                <li>Open <strong>@BotFather</strong>, select your bot, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
-                <li>In Railway Variables set <code>TELEGRAM_BOT_USERNAME</code>, <code>TELEGRAM_BOT_TOKEN</code>, and <code>TELEGRAM_WEBHOOK_SECRET</code>.</li>
-                <li>Set <code>APP_PUBLIC_URL</code> to <code>${escapeHtml(window.location.origin)}</code>, redeploy, then return and select Connect Telegram.</li>
-            </ol>
-            <div class="settings-actions">
-                <a class="btn-small" href="https://core.telegram.org/widgets/login" target="_blank" rel="noopener noreferrer">Official login guide</a>
-                <a class="btn-small" href="https://railway.com/dashboard" target="_blank" rel="noopener noreferrer">Open Railway</a>
-                <a class="btn btn-primary" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open @BotFather</a>
-                <button class="btn btn-primary" onclick="refreshTelegramSetup()">Check server setup</button>
-            </div>
-        </div>`;
-    document.body.appendChild(overlay);
+    location.hash = '#/telegram-guide';
 }
 
-async function refreshTelegramSetup() {
+function telegramGuideStatusItem(label, ready, detail) {
+    return `<li class="telegram-check ${ready ? 'is-ready' : 'is-missing'}">
+        <span aria-hidden="true">${ready ? '✓' : '!'}</span>
+        <div><strong>${escapeHtml(label)}</strong><p>${escapeHtml(detail)}</p></div>
+    </li>`;
+}
+
+async function renderTelegramGuidePage() {
+    const el = document.getElementById('mainContent');
+    const lastError = sessionStorage.getItem('meme_ops_telegram_last_error');
+    el.innerHTML = `
+        <section class="telegram-guide-page">
+            <header class="telegram-guide-hero">
+                <button class="icon-button" onclick="history.length > 1 ? history.back() : location.hash='#/overview'" aria-label="Back">←</button>
+                ${socialProviderLogo('telegram')}
+                <div>
+                    <span class="eyebrow">BEGINNER GUIDE</span>
+                    <h1>Connect Telegram to meme_ops</h1>
+                    <p>Telegram authorization, meme_ops identity binding, and community data access are three separate steps. Complete all three before Telegram metrics can appear in a report.</p>
+                </div>
+            </header>
+
+            ${lastError ? `<div class="telegram-last-error"><strong>Last connection attempt</strong><p>${escapeHtml(lastError)}</p></div>` : ''}
+
+            <div class="telegram-guide-summary" id="telegramGuideStatus" aria-live="polite">
+                <strong>Checking the current server setup…</strong>
+                <p>No secret values are displayed on this page.</p>
+            </div>
+
+            <div class="telegram-guide-grid">
+                <article class="telegram-guide-step">
+                    <span class="step-number">1</span>
+                    <div>
+                        <span class="step-owner">PROJECT ADMIN · ONE TIME</span>
+                        <h2>Prepare the project Bot</h2>
+                        <p class="step-intro"><strong>Project administrator action.</strong> Regular users never paste a Bot Token into meme_ops.</p>
+                        <ol>
+                            <li>Open <strong>@BotFather</strong>, choose the same Bot used by meme_ops, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
+                            <li>In this Railway service, add <code>TELEGRAM_BOT_USERNAME</code>, the matching <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_WEBHOOK_SECRET</code>, and <code>APP_PUBLIC_URL=${escapeHtml(window.location.origin)}</code>.</li>
+                            <li>Redeploy the service. Sealed Railway values are supported: the application receives the value at runtime while the dashboard hides it.</li>
+                            <li>Select <strong>Check current setup</strong> below. Bot Username and Bot Token must belong to the same BotFather Bot.</li>
+                        </ol>
+                        <p class="guide-safety"><strong>Never send the Bot Token to a user, paste it into a post, or commit it to GitHub.</strong></p>
+                    </div>
+                </article>
+
+                <article class="telegram-guide-step">
+                    <span class="step-number">2</span>
+                    <div>
+                        <span class="step-owner">EVERY USER</span>
+                        <h2>Bind your Telegram identity</h2>
+                        <ol>
+                            <li>Connect your wallet in meme_ops. Social connections are private to that wallet.</li>
+                            <li>Open <strong>Home → Edit profile → Social data connections</strong> and select <strong>Connect Telegram</strong>.</li>
+                            <li>Approve the official Telegram Widget. The message “You have successfully logged in to use Telegram Widgets” only means Telegram approved the login.</li>
+                            <li>Return to meme_ops and confirm that the Telegram icon is colored and the card says <strong>Connected as @username</strong>. Only then is meme_ops identity binding complete.</li>
+                        </ol>
+                    </div>
+                </article>
+
+                <article class="telegram-guide-step">
+                    <span class="step-number">3</span>
+                    <div>
+                        <span class="step-owner">COMMUNITY ADMIN · PER GROUP</span>
+                        <h2>Connect a group or channel for metrics</h2>
+                        <ol>
+                            <li>Add the configured meme_ops Bot to the Telegram group or channel.</li>
+                            <li>In meme_ops select <strong>Bind group</strong> to create a code valid for 15 minutes.</li>
+                            <li>As a group/channel administrator, send <code>/connect YOUR_CODE</code> inside that group or channel.</li>
+                            <li>Wait for the Bot confirmation. Member counts can then be collected and used as evidence in later reports.</li>
+                        </ol>
+                    </div>
+                </article>
+            </div>
+
+            <article class="telegram-troubleshooting">
+                <h2>If Telegram says success but meme_ops says “signature invalid or expired”</h2>
+                <ul>
+                    <li>Do not reuse an old Telegram authorization tab. Close it and start <strong>Connect Telegram</strong> again.</li>
+                    <li>Ask the project administrator to confirm that Railway currently detects both Bot Username and Bot Token. A Telegram success screen cannot replace the server-side Token.</li>
+                    <li>If both are detected but the error repeats, regenerate the current Bot Token in @BotFather, update Railway, redeploy, and retry once. The username and Token must come from the same Bot.</li>
+                    <li>After identity binding, Telegram reports can still say “group not connected” until Step 3 is complete.</li>
+                </ul>
+            </article>
+
+            <div class="telegram-guide-actions">
+                <button class="btn btn-primary" onclick="refreshTelegramSetup(true)">Check current setup</button>
+                <button class="btn-small" onclick="location.hash='${state.token ? '#/settings' : '#/overview'}'">${state.token ? 'Return to social connections' : 'Return to Overview'}</button>
+                <a class="btn-small" href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer">Open @BotFather</a>
+                <a class="btn-small" href="https://railway.com/dashboard" target="_blank" rel="noopener noreferrer">Open Railway</a>
+                <a class="btn-small" href="https://core.telegram.org/widgets/login" target="_blank" rel="noopener noreferrer">Official Telegram guide</a>
+            </div>
+        </section>`;
+    await loadTelegramGuideStatus();
+}
+
+async function loadTelegramGuideStatus() {
+    const el = document.getElementById('telegramGuideStatus');
+    if (!el) return null;
     try {
-        const response = await fetch(`${API_BASE}/api/social/provider`);
+        const response = await fetch(`${API_BASE}/api/social/provider`, {cache:'no-store'});
+        const status = await response.json();
+        if (!response.ok) throw new Error('Unable to read server configuration');
+        const telegram = status.telegram || {};
+        const checks = [
+            ['Encrypted credential storage', Boolean(status.encryption_configured), status.encryption_configured ? 'Ready' : 'SOCIAL_TOKEN_ENCRYPTION_KEY is missing'],
+            ['Bot Username', Boolean(telegram.bot_username_configured), telegram.bot_username_configured ? 'Detected by the running service' : 'TELEGRAM_BOT_USERNAME is missing'],
+            ['Bot Token', Boolean(telegram.bot_token_configured), telegram.bot_token_configured ? 'Detected by the running service' : 'TELEGRAM_BOT_TOKEN is missing'],
+            ['Webhook secret', Boolean(telegram.webhook_configured), telegram.webhook_configured ? 'Detected by the running service' : 'TELEGRAM_WEBHOOK_SECRET is missing'],
+            ['Public URL', Boolean(status.public_app_url), status.public_app_url || 'APP_PUBLIC_URL is missing'],
+        ];
+        const ready = Boolean(status.encryption_configured && telegram.login_configured && telegram.webhook_configured);
+        el.className = `telegram-guide-summary ${ready ? 'is-ready' : 'is-missing'}`;
+        el.innerHTML = `
+            <div><strong>${ready ? 'Server setup detected' : 'Server setup is incomplete'}</strong>
+            <p>${ready
+                ? 'You can now test Connect Telegram. A user connection is complete only after the colored Telegram icon appears.'
+                : 'Fix every missing item in the current Railway service, redeploy, then check again.'}</p></div>
+            <ul>${checks.map(item => telegramGuideStatusItem(...item)).join('')}</ul>`;
+        return status;
+    } catch (error) {
+        el.className = 'telegram-guide-summary is-missing';
+        el.innerHTML = `<strong>Could not check the running service</strong><p>${escapeHtml(error.message || 'Try again after deployment.')}</p>`;
+        return null;
+    }
+}
+
+async function refreshTelegramSetup(fromGuide = false) {
+    try {
+        if (fromGuide) {
+            const status = await loadTelegramGuideStatus();
+            if (!status) return;
+            const ready = Boolean(status.encryption_configured && status.telegram?.login_configured && status.telegram?.webhook_configured);
+            showToast(ready ? 'Telegram server setup is detected. Continue with Connect Telegram.' : 'Telegram server setup is still incomplete. Review the highlighted items.');
+            return;
+        }
+        const response = await fetch(`${API_BASE}/api/social/provider`, {cache:'no-store'});
         const status = await response.json();
         if (!response.ok) throw new Error('Unable to read server configuration');
         if (status.telegram?.login_configured) {
-            document.getElementById('telegramSetupOverlay')?.remove();
             if (document.getElementById('socialConnections')) {
                 await loadSocialConnections('socialConnections');
             }

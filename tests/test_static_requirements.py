@@ -358,10 +358,21 @@ class StaticProductRequirementsTests(unittest.TestCase):
         self.assertIn("X token exchange was rejected (401)", social)
         for marker in (
             "Project administrator action", "refreshTelegramSetup",
-            "Regular users never paste a Bot Token", "Check server setup",
+            "Regular users never paste a Bot Token", "Check current setup",
         ):
             self.assertIn(marker, APP)
         self.assertNotIn('id="telegramBotToken"', APP)
+
+    def test_telegram_beginner_guide_explains_all_connection_stages(self):
+        style = (ROOT / "frontend" / "style.css").read_text(encoding="utf-8")
+        for marker in (
+            "#/telegram-guide", "renderTelegramGuidePage", "loadTelegramGuideStatus",
+            "You have successfully logged in to use Telegram Widgets",
+            "Bind your Telegram identity", "Connect a group or channel for metrics",
+            "signature invalid or expired", "Check current setup",
+        ):
+            self.assertIn(marker, APP)
+        self.assertIn(".telegram-guide-page", style)
 
 
 if __name__ == "__main__":

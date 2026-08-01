@@ -239,6 +239,47 @@ class AnalysisQualityTests(unittest.TestCase):
         self.assertIn("identity is connected", rendered)
         self.assertNotIn("x, reddit, and channel-level", rendered)
 
+    def test_verified_social_metrics_change_operator_conclusion_and_actions(self):
+        raw = raw_fixture()
+        raw["coingecko"]["community_data"] = {}
+        raw["social"] = {
+            "connected": True,
+            "binding_connected": True,
+            "metrics": [
+                {
+                    "provider": "x", "mentions_24h": 640,
+                    "active_authors_24h": 82, "engagements_24h": 1900,
+                },
+                {"provider": "telegram", "members": 12500},
+            ],
+            "rag_documents": [],
+            "providers": {
+                "x": {"status": "ready", "identity_connected": True},
+                "telegram": {"status": "ready", "identity_connected": True},
+                "reddit": {"status": "not_configured"},
+            },
+        }
+        self.agent.set_persona("operator")
+        report = self.agent._fallback_analyze(
+            "Pepe solana", raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        trending = next(
+            item for item in report["report_sections"]
+            if item["title"] == "What Is Trending"
+        )["content"]
+        self.assertIn("640 X mentions", trending)
+        self.assertIn("12,500 members", trending)
+        self.assertIn("verified baseline", report["recommendation"].lower())
+        self.assertTrue(all(
+            "connected baseline" in item["dependency"].lower()
+            for item in report["action_plan"]
+        ))
+        self.assertNotIn(
+            "X community metrics",
+            {item["source"] for item in report["data_gaps"]},
+        )
+
     def test_operator_model_cannot_label_community_when_social_is_disconnected(self):
         raw = raw_fixture()
         raw["coingecko"]["community_data"] = {}
@@ -455,6 +496,10 @@ class AnalysisCacheSocialRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second["data_cache"]["hit"])
         self.assertEqual(fetch.await_count, 1)
         self.assertEqual(enrich.await_count, 2)
+        self.assertEqual(
+            set(second["performance_ms"]),
+            {"market_data", "social_data", "report_generation", "validation", "total"},
+        )
         self.assertIn(
             "X community metrics",
             {item["source"] for item in first["data_gaps"]},
