@@ -368,11 +368,14 @@ class StaticProductRequirementsTests(unittest.TestCase):
         for marker in (
             "#/telegram-guide", "renderTelegramGuidePage", "loadTelegramGuideStatus",
             "You have successfully logged in to use Telegram Widgets",
-            "Bind your Telegram identity", "Connect a group or channel for metrics",
+            "Bind your Telegram identity", "Connect an administered group for metrics",
             "signature invalid or expired", "Check current setup",
+            "Cannot be bound in this release", "Telegram Client API (MTProto)",
+            "Saved Messages", "Why is /connect required?",
         ):
             self.assertIn(marker, APP)
         self.assertIn(".telegram-guide-page", style)
+        self.assertIn(".telegram-access-model", style)
 
     def test_social_data_flow_has_inline_telegram_and_provider_diagnostics(self):
         main = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")

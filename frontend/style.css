@@ -996,6 +996,18 @@ button.market-row:hover { background:var(--bg-hover); }
 .telegram-guide-summary>div>strong,.telegram-guide-summary>strong { font-size:.95rem; }
 .telegram-guide-summary p { margin:6px 0 0;color:var(--text-muted);font-size:.74rem;line-height:1.55; }
 .telegram-guide-summary>ul { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none; }
+.telegram-access-model { display:grid;gap:15px;padding:22px;border:1px solid rgba(34,158,217,.34);border-radius:15px;background:rgba(34,158,217,.045); }
+.telegram-access-model h2 { margin:5px 0 6px;font-size:1.05rem; }
+.telegram-access-model header p,.telegram-access-model article p { margin:0;color:var(--text-muted);font-size:.74rem;line-height:1.6; }
+.telegram-access-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px; }
+.telegram-access-grid article { padding:16px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.025); }
+.telegram-access-grid article.is-supported { border-color:rgba(0,230,118,.3); }
+.telegram-access-grid article.is-unavailable { border-color:rgba(255,82,82,.3); }
+.telegram-access-grid article.is-planned { grid-column:1/-1;border-color:rgba(255,193,7,.28); }
+.telegram-access-grid strong { display:block;margin-bottom:8px;font-size:.8rem; }
+.telegram-access-grid ul { display:grid;gap:6px;margin:0;padding-left:18px;color:var(--text-muted);font-size:.71rem;line-height:1.55; }
+.telegram-access-grid code { color:var(--text); }
+.guide-binding-note { margin:0;padding:11px 13px;border-left:3px solid var(--accent);background:rgba(108,99,255,.08);color:var(--text-muted);font-size:.71rem;line-height:1.55; }
 .telegram-check { display:grid;grid-template-columns:24px 1fr;gap:8px;padding:9px;border-radius:10px;background:rgba(255,255,255,.025); }
 .telegram-check>span { display:grid;width:22px;height:22px;place-items:center;border-radius:50%;font-weight:800; }
 .telegram-check.is-ready>span { background:rgba(0,230,118,.14);color:var(--green); }
@@ -1030,6 +1042,8 @@ button.market-row:hover { background:var(--bg-hover); }
     .telegram-guide-hero>div { grid-column:1/-1; }
     .telegram-guide-summary { grid-template-columns:1fr; }
     .telegram-guide-summary>ul { grid-template-columns:1fr; }
+    .telegram-access-grid { grid-template-columns:1fr; }
+    .telegram-access-grid article.is-planned { grid-column:auto; }
     .telegram-guide-step { grid-template-columns:38px 1fr;padding:17px; }
     .step-number { width:34px;height:34px; }
 }

@@ -2606,6 +2606,40 @@ async function renderTelegramGuidePage() {
                 <p>No secret values are displayed on this page.</p>
             </div>
 
+            <section class="telegram-access-model">
+                <header>
+                    <span class="eyebrow">CHOOSE THE RIGHT DATA MODE</span>
+                    <h2>What Telegram data can meme_ops collect?</h2>
+                    <p>Telegram identity login does not grant access to arbitrary communities. The current release uses an operator-authorized Bot connection.</p>
+                </header>
+                <div class="telegram-access-grid">
+                    <article class="is-supported">
+                        <strong>Supported now</strong>
+                        <ul>
+                            <li>A group or supergroup that you administer.</li>
+                            <li>The meme_ops Bot is present in that community.</li>
+                            <li>You send the one-time <code>/connect CODE</code> command inside the target group.</li>
+                            <li>New member-count and aggregate activity signals after binding.</li>
+                        </ul>
+                    </article>
+                    <article class="is-unavailable">
+                        <strong>Cannot be bound in this release</strong>
+                        <ul>
+                            <li>A group where your connected Telegram account is not an administrator.</li>
+                            <li>Private communities that have not invited the Bot.</li>
+                            <li>Saved Messages, BotFather, a Bot private chat, or an unrelated direct message.</li>
+                            <li>Historical messages from before the community was bound.</li>
+                            <li>Broadcast-only channels where Telegram does not expose the posting administrator identity to the Bot.</li>
+                        </ul>
+                    </article>
+                    <article class="is-planned">
+                        <strong>Alternative for broad public-market monitoring</strong>
+                        <p>A separate Telegram Client API (MTProto) collector can monitor registered public channels and public groups without posting a binding command. It requires a dedicated Telegram API ID, API Hash, encrypted account session, rate-limit controls, and a reviewed public-community registry. This collector is not enabled in the current release.</p>
+                    </article>
+                </div>
+                <p class="guide-binding-note"><strong>Why is /connect required?</strong> It proves that the wallet-bound Telegram user controls the target group and prevents another user from attaching or collecting a private community without permission.</p>
+            </section>
+
             <div class="telegram-guide-grid">
                 <article class="telegram-guide-step">
                     <span class="step-number">1</span>
@@ -2642,11 +2676,12 @@ async function renderTelegramGuidePage() {
                     <span class="step-number">3</span>
                     <div>
                         <span class="step-owner">COMMUNITY ADMIN · PER GROUP</span>
-                        <h2>Connect a group or channel for metrics</h2>
+                        <h2>Connect an administered group for metrics</h2>
                         <ol>
-                            <li>Add the configured meme_ops Bot to the Telegram group or channel.</li>
+                            <li>Choose a Telegram group or supergroup that your connected Telegram account administers. Do not use Bot private chat, Saved Messages, BotFather, or another project's group.</li>
+                            <li>Add the configured meme_ops Bot to that group. Give it only the permissions needed to read activity and verify administrators.</li>
                             <li>In meme_ops select <strong>Bind group</strong> to create a code valid for 15 minutes.</li>
-                            <li>As a group/channel administrator, send <code>/connect YOUR_CODE</code> inside that group or channel.</li>
+                            <li>From the same personal Telegram account connected to your wallet, send <code>/connect YOUR_CODE</code> inside the target group—not in a private chat with the Bot.</li>
                             <li>Wait for the Bot confirmation. Member counts and new aggregate activity after binding can then be used as evidence in later reports. Historical Telegram messages are not backfilled.</li>
                         </ol>
                     </div>
