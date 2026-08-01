@@ -374,6 +374,21 @@ class StaticProductRequirementsTests(unittest.TestCase):
             self.assertIn(marker, APP)
         self.assertIn(".telegram-guide-page", style)
 
+    def test_social_data_flow_has_inline_telegram_and_provider_diagnostics(self):
+        main = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+        social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
+        schema = (ROOT / "sql" / "schema.sql").read_text(encoding="utf-8")
+        for marker in (
+            "data-onauth", "memeOpsTelegramAuth(user)",
+            "runSocialDiagnostics", "Run data connection test",
+        ):
+            self.assertIn(marker, APP)
+        self.assertIn('@app.post("/api/social/telegram/callback")', main)
+        self.assertIn('@app.post("/api/social/diagnostics")', main)
+        self.assertIn("credits_depleted", social)
+        self.assertIn("wallet-oauth-search", social)
+        self.assertIn("telegram_activity_events", schema + social)
+
 
 if __name__ == "__main__":
     unittest.main()

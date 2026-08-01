@@ -142,6 +142,22 @@ CREATE TABLE IF NOT EXISTS social_communities (
 CREATE INDEX IF NOT EXISTS idx_social_communities_owner
 ON social_communities(owner_address, provider);
 
+-- Privacy-preserving Telegram activity aggregates. Raw message text and user
+-- identifiers are never stored; only a per-community sender hash is retained.
+CREATE TABLE IF NOT EXISTS telegram_activity_events (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    community_id             INTEGER NOT NULL,
+    external_event_id        TEXT NOT NULL,
+    sender_hash              TEXT,
+    event_type               TEXT DEFAULT 'message',
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(community_id, external_event_id),
+    FOREIGN KEY (community_id) REFERENCES social_communities(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_activity_community_time
+ON telegram_activity_events(community_id, created_at DESC);
+
 -- asset_key uses chain:contract when possible and coingecko:<id> otherwise.
 CREATE TABLE IF NOT EXISTS social_assets (
     asset_key                TEXT PRIMARY KEY,

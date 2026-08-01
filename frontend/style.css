@@ -698,6 +698,19 @@ body {
 .social-connection-card button:disabled { opacity:.45; cursor:not-allowed; }
 .social-connection-card .danger-link { color:var(--red); }
 .social-connection-card.is-connected { border-color:rgba(0,230,118,.35); box-shadow:inset 3px 0 var(--green); }
+.social-diagnostics-actions { display:flex;align-items:center;gap:10px;margin-top:12px; }
+.social-diagnostics-actions span { color:var(--text-muted);font-size:.66rem; }
+.social-diagnostics-grid { display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px; }
+.social-diagnostic-card { display:grid;grid-template-columns:auto 1fr;gap:9px;padding:11px;border:1px solid var(--border);border-radius:11px;background:rgba(8,8,18,.32); }
+.social-diagnostic-card .social-brand-logo { width:32px;height:32px; }
+.social-diagnostic-card .social-brand-logo svg { width:16px;height:16px; }
+.social-diagnostic-card strong,.social-diagnostic-card span { display:block; }
+.social-diagnostic-card strong { font-size:.7rem; }
+.social-diagnostic-card span { margin-top:2px;color:var(--text-muted);font-size:.62rem; }
+.social-diagnostic-card p { margin:5px 0;color:var(--text-muted);font-size:.64rem;line-height:1.45; }
+.social-diagnostic-card code { color:#ffd54f;font-size:.6rem; }
+.social-diagnostic-card.is-ready { border-color:rgba(0,230,118,.34); }
+.social-diagnostic-card.is-action { border-color:rgba(255,193,7,.34); }
 .social-connect-button { min-width:112px; border-color:rgba(108,99,255,.65); background:rgba(108,99,255,.14); color:white; }
 .telegram-connect { border-color:rgba(34,158,217,.72); background:rgba(34,158,217,.16); }
 .social-setup-badge { flex:0 0 auto; padding:6px 9px; border:1px solid rgba(255,191,0,.32); border-radius:999px; background:rgba(255,191,0,.08); color:var(--yellow); font-size:.66rem; font-weight:700; }
@@ -738,6 +751,7 @@ body {
     .sidebar { display: none; }
     .main-content { padding: 12px; }
     .topnav-tab { padding: 6px 12px; font-size: 0.8rem; }
+    .social-diagnostics-grid { grid-template-columns:1fr; }
 }
 
 .brand-button { border:0;background:transparent;color:var(--text);cursor:pointer;font:inherit; }

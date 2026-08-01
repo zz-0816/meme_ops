@@ -51,6 +51,7 @@ from social import (
     configure_telegram_webhook,
     latest_social_context, list_connections, list_social_assets,
     process_telegram_webhook, social_provider_status,
+    social_connection_diagnostics,
     start_social_scheduler, stop_social_scheduler,
     validate_telegram_bot_configuration,
 )
@@ -215,6 +216,15 @@ async def api_social_connections(user=Depends(get_current_user)):
     return list_connections(user)
 
 
+@app.post("/api/social/diagnostics")
+async def api_social_diagnostics(
+    data: dict | None = None, user=Depends(get_current_user),
+):
+    return await social_connection_diagnostics(
+        user, force=bool((data or {}).get("force")),
+    )
+
+
 @app.post("/api/social/x/connect")
 async def api_connect_x(request: Request, user=Depends(get_current_user)):
     try:
@@ -261,6 +271,22 @@ async def api_telegram_callback(request: Request):
         return RedirectResponse(
             url=f"/?social=telegram&status=error&reason={message}#/settings"
         )
+
+
+@app.post("/api/social/telegram/callback")
+async def api_telegram_callback_inline(
+    data: dict, user=Depends(get_current_user),
+):
+    """Verify Widget data without a cross-page query-string redirect."""
+    try:
+        result = complete_telegram_connection(data, expected_owner=user)
+        return {
+            "connected": True,
+            "provider": "telegram",
+            "owner_address": result["owner_address"],
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/social/telegram/link-code")

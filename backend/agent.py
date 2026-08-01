@@ -1076,9 +1076,11 @@ to the requested writing style, but never alter, omit, or invent factual market 
                     )
                 )
         if social.get("collection_error"):
+            safe_error = str(social.get("collection_error"))[:240]
             parts.append(
                 "- Collection attempt failed after identity verification. Treat this as "
-                "connected-but-unavailable provider data, not as a disconnected account."
+                "connected-but-unavailable provider data, not as a disconnected account. "
+                f"Provider status: {safe_error}"
             )
 
         return "\n".join(parts) if parts else "No data available"
@@ -1139,6 +1141,10 @@ to the requested writing style, but never alter, omit, or invent factual market 
         x_engagements = aggregate_social_metric("x", "engagements_24h")
         x_active_authors = aggregate_social_metric("x", "active_authors_24h")
         telegram_members = aggregate_social_metric("telegram", "members")
+        telegram_posts = aggregate_social_metric("telegram", "posts_24h")
+        telegram_active_authors = aggregate_social_metric(
+            "telegram", "active_authors_24h",
+        )
         social_connected = bool(
             twitter_followers is not None
             or reddit_subscribers is not None
@@ -1204,6 +1210,14 @@ to the requested writing style, but never alter, omit, or invent factual market 
         if telegram_members is not None:
             social_evidence_parts.append(
                 f"{telegram_members:,.0f} members across connected Telegram communities"
+            )
+        if telegram_posts is not None:
+            social_evidence_parts.append(
+                f"{telegram_posts:,.0f} Telegram messages/posts in 24h"
+            )
+        if telegram_active_authors is not None:
+            social_evidence_parts.append(
+                f"{telegram_active_authors:,.0f} active Telegram contributors in 24h"
             )
         social_reach_evidence = (
             ", ".join(social_evidence_parts)
@@ -1459,15 +1473,27 @@ to the requested writing style, but never alter, omit, or invent factual market 
             recommendation = recs.get(risk, "Insufficient data")
 
         data_gaps = []
+        collection_errors = social_context.get("collection_errors") or {}
+        x_collection_error = next(
+            (
+                value for key, value in collection_errors.items()
+                if str(key).startswith("x_")
+            ),
+            None,
+        )
         if x_state != "ready" and twitter_followers is None and x_mentions is None:
             data_gaps.append({
                 "source": "X community metrics",
                 "status": (
+                    "action_required"
+                    if x_collection_error else
                     "connected_no_data"
                     if x_state == "connected_no_data"
                     else "not_connected"
                 ),
                 "impact": (
+                    str(x_collection_error.get("message"))
+                    if x_collection_error else
                     "X identity is connected, but no asset-level metric snapshot was returned. "
                     "Check the X API access tier and tweet.read permissions; audience size, "
                     "engagement quality, and sentiment remain unverified."

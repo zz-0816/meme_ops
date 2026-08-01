@@ -39,6 +39,7 @@ SOCIAL_INLINE_TIMEOUT_SECONDS = max(
     2.0, float(os.getenv("SOCIAL_INLINE_TIMEOUT_SECONDS", "8"))
 )
 _TELEGRAM_BOT_VALIDATION_CACHE: dict[str, Any] = {}
+_SOCIAL_DIAGNOSTICS_CACHE: dict[str, tuple[float, dict]] = {}
 _BACKGROUND_COLLECTION_TASKS: set[asyncio.Task] = set()
 
 
@@ -180,14 +181,20 @@ def _save_oauth_state(
     return state
 
 
-def _consume_oauth_state(state: str, provider: str) -> dict:
+def _consume_oauth_state(
+    state: str, provider: str, expected_owner: str | None = None,
+) -> dict:
     conn = get_connection()
     try:
-        row = conn.execute(
-            """SELECT * FROM social_oauth_states
-               WHERE state = ? AND provider = ? AND expires_at >= ?""",
-            (state, provider, _iso()),
-        ).fetchone()
+        query = (
+            "SELECT * FROM social_oauth_states "
+            "WHERE state = ? AND provider = ? AND expires_at >= ?"
+        )
+        params: list[Any] = [state, provider, _iso()]
+        if expected_owner:
+            query += " AND owner_address = ?"
+            params.append(expected_owner.lower())
+        row = conn.execute(query, tuple(params)).fetchone()
         if not row:
             raise ValueError("Login state is invalid, expired, or already used")
         conn.execute("DELETE FROM social_oauth_states WHERE state = ?", (state,))
@@ -433,14 +440,18 @@ def verify_telegram_login(payload: dict, bot_token: str | None = None) -> bool:
     return telegram_login_verification_error(payload, bot_token) is None
 
 
-def complete_telegram_connection(payload: dict) -> dict:
+def complete_telegram_connection(
+    payload: dict, expected_owner: str | None = None,
+) -> dict:
     state = str(payload.get("state") or "")
     verification_error = telegram_login_verification_error(payload)
     if verification_error:
         raise ValueError(verification_error)
     # Consume the one-time wallet state only after Telegram's proof is valid so
     # a malformed callback cannot burn an otherwise usable login attempt.
-    pending = _consume_oauth_state(state, "telegram")
+    pending = _consume_oauth_state(
+        state, "telegram", expected_owner=expected_owner,
+    )
     telegram_id = str(payload.get("id") or "")
     if not telegram_id:
         raise ValueError("Telegram identity is missing")
@@ -604,7 +615,7 @@ async def process_telegram_webhook(update: dict) -> dict:
     message = update.get("message") or update.get("channel_post") or {}
     text = str(message.get("text") or "").strip()
     if not text.lower().startswith("/connect "):
-        return {"accepted": True, "action": "ignored"}
+        return _record_telegram_activity(update, message)
     code = text.split(None, 1)[1].strip().upper()
     sender_id = str((message.get("from") or {}).get("id") or "")
     chat = message.get("chat") or {}
@@ -664,6 +675,61 @@ async def process_telegram_webhook(update: dict) -> dict:
         "meme_ops connected this community. Read-only metric collection is now enabled.",
     )
     return {"accepted": True, "action": "community-linked"}
+
+
+def _record_telegram_activity(update: dict, message: dict) -> dict:
+    """Store aggregate-only activity for explicitly bound communities."""
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    if not chat_id:
+        return {"accepted": True, "action": "ignored"}
+    conn = get_connection()
+    try:
+        communities = conn.execute(
+            """SELECT id FROM social_communities
+               WHERE provider = 'telegram' AND external_community_id = ?
+                 AND status = 'connected'""",
+            (chat_id,),
+        ).fetchall()
+        if not communities:
+            return {"accepted": True, "action": "unbound-community"}
+        sender = message.get("from") or message.get("sender_chat") or {}
+        sender_id = str(sender.get("id") or "")
+        sender_hash = (
+            hashlib.sha256(f"{chat_id}:{sender_id}".encode("utf-8")).hexdigest()
+            if sender_id else None
+        )
+        event_id = str(
+            update.get("update_id")
+            or f"{chat_id}:{message.get('message_id') or secrets.token_hex(8)}"
+        )
+        created_at = _iso()
+        try:
+            if message.get("date") is not None:
+                created_at = _iso(datetime.fromtimestamp(
+                    int(message["date"]), tz=timezone.utc,
+                ))
+        except (TypeError, ValueError, OSError):
+            pass
+        event_type = "channel_post" if update.get("channel_post") else "message"
+        for community in communities:
+            conn.execute(
+                """INSERT OR IGNORE INTO telegram_activity_events
+                   (community_id, external_event_id, sender_hash, event_type, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    community["id"], event_id, sender_hash,
+                    event_type, created_at,
+                ),
+            )
+        conn.commit()
+        return {
+            "accepted": True,
+            "action": "activity-recorded",
+            "community_count": len(communities),
+        }
+    finally:
+        conn.close()
 
 
 async def _telegram_user_is_admin(chat_id: str, user_id: str) -> bool:
@@ -971,6 +1037,10 @@ def _save_snapshot(
             known.append(f"followers={metrics['followers']}")
         if metrics.get("engagements_24h") is not None:
             known.append(f"engagements/24h={metrics['engagements_24h']}")
+        if metrics.get("posts_24h") is not None:
+            known.append(f"posts/24h={metrics['posts_24h']}")
+        if metrics.get("active_authors_24h") is not None:
+            known.append(f"active authors/24h={metrics['active_authors_24h']}")
         content = (
             f"{provider.upper()} social snapshot for {asset_key}. "
             + (", ".join(known) if known else "No supported numeric metric was returned.")
@@ -1008,6 +1078,123 @@ def _save_snapshot(
         conn.commit()
     finally:
         conn.close()
+
+
+def _x_collection_error(response: httpx.Response, endpoint: str) -> dict:
+    """Return an actionable error without exposing credentials or raw headers."""
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    detail = str(payload.get("detail") or payload.get("title") or "").lower()
+    if response.status_code == 402 or "credits depleted" in detail:
+        code = "credits_depleted"
+        message = (
+            "X API credits are depleted. Add credits to the X developer Project/App; "
+            "account OAuth binding alone does not include API data credits."
+        )
+    elif response.status_code == 401:
+        code = "credential_rejected"
+        message = "X API rejected the configured credential. Regenerate the App credential and reconnect X."
+    elif response.status_code == 403:
+        code = "access_tier_denied"
+        message = "The current X API access tier does not permit this endpoint."
+    elif response.status_code == 429:
+        code = "rate_limited"
+        message = "X API rate limit reached. Retry after the provider reset window."
+    else:
+        code = "provider_error"
+        message = f"X API returned HTTP {response.status_code} for {endpoint}."
+    return {
+        "code": code,
+        "http_status": response.status_code,
+        "endpoint": endpoint,
+        "message": message,
+    }
+
+
+def _x_asset_query(asset: dict) -> str:
+    symbol = "".join(
+        char for char in str(asset.get("symbol") or "") if char.isalnum()
+    )[:20]
+    name = " ".join(
+        "".join(
+            char for char in str(asset.get("name") or "")
+            if char.isalnum() or char in {" ", "-", "_"}
+        ).split()
+    )[:80]
+    terms = []
+    if symbol:
+        terms.append(f"${symbol}")
+    if name and name.lower() != symbol.lower():
+        terms.append(f'"{name}"')
+    if not terms:
+        terms.append(f'"{str(asset.get("asset_key") or "meme")[:80]}"')
+    return f"({' OR '.join(terms)}) -is:retweet"
+
+
+async def social_connection_diagnostics(
+    owner_address: str, force: bool = False,
+) -> dict:
+    """Test provider data paths and return only non-secret, actionable state."""
+    owner = owner_address.lower()
+    cached = _SOCIAL_DIAGNOSTICS_CACHE.get(owner)
+    if not force and cached and time.monotonic() - cached[0] < 300:
+        return dict(cached[1])
+    connections = list_connections(owner)
+    by_provider = {
+        item["provider"]: item for item in connections.get("connections") or []
+    }
+    result: dict[str, Any] = {
+        "checked_at": _iso(),
+        "x": {
+            "identity_connected": "x" in by_provider,
+            "collector": "not_configured",
+        },
+        "telegram": {
+            "identity_connected": "telegram" in by_provider,
+            "community_count": len(connections.get("communities") or []),
+            "bot": "not_configured",
+        },
+    }
+    token = os.getenv("X_BEARER_TOKEN", "").strip()
+    if token:
+        start_time = (_utcnow() - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{X_API_URL}/tweets/counts/recent",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "query": '($DOGE OR "Dogecoin") -is:retweet',
+                    "granularity": "hour",
+                    "start_time": start_time,
+                },
+            )
+        if response.status_code == 200:
+            result["x"].update({
+                "collector": "ready",
+                "message": "App-level recent-counts access is working.",
+            })
+        else:
+            result["x"].update({
+                "collector": "action_required",
+                "error": _x_collection_error(response, "recent-counts"),
+            })
+    try:
+        bot = await validate_telegram_bot_configuration(force=force)
+        result["telegram"].update({
+            "bot": "ready",
+            "bot_username": bot.get("username"),
+            "message": "Bot Token and Bot Username were verified by Telegram getMe.",
+        })
+    except SocialConfigurationError as error:
+        result["telegram"].update({
+            "bot": "action_required", "message": str(error),
+        })
+    _SOCIAL_DIAGNOSTICS_CACHE[owner] = (time.monotonic(), result)
+    return dict(result)
 
 
 class SocialCollector:
@@ -1076,75 +1263,119 @@ class SocialCollector:
         asset: dict,
         owner_address: str | None = None,
     ) -> dict:
-        token = os.getenv("X_BEARER_TOKEN", "").strip()
-        source_mode = "shared-api"
-        if not token and owner_address:
-            token = await _wallet_x_access_token(owner_address)
-            if token:
-                source_mode = "wallet-oauth"
-        results: dict[str, Any] = {"asset_key": asset["asset_key"], "providers": {}}
-        if token:
-            query_parts = []
-            symbol = str(asset.get("symbol") or "").strip()
-            name = str(asset.get("name") or "").strip()
-            if symbol:
-                query_parts.append(f'"${symbol}"')
-            if name and name.lower() != symbol.lower():
-                query_parts.append(f'"{name}"')
-            query = " OR ".join(query_parts) or f'"{asset["asset_key"]}"'
+        shared_token = os.getenv("X_BEARER_TOKEN", "").strip()
+        wallet_token = (
+            await _wallet_x_access_token(owner_address)
+            if owner_address else ""
+        )
+        results: dict[str, Any] = {
+            "asset_key": asset["asset_key"], "providers": {}, "errors": {},
+        }
+        if shared_token or wallet_token:
+            query = _x_asset_query(asset)
+            start_time = (_utcnow() - timedelta(hours=24)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            mentions: int | None = None
+            posts: list[dict] | None = None
+            counts_ok = False
+            search_ok = False
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(
-                    f"{X_API_URL}/tweets/counts/recent",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"query": query, "granularity": "day"},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                engagements = None
-                active_authors = None
-                if owner_address or int(asset.get("priority_tier") or 3) == 1:
-                    detail_response = await client.get(
-                        f"{X_API_URL}/tweets/search/recent",
-                        headers={"Authorization": f"Bearer {token}"},
+                if shared_token:
+                    response = await client.get(
+                        f"{X_API_URL}/tweets/counts/recent",
+                        headers={"Authorization": f"Bearer {shared_token}"},
                         params={
                             "query": query,
-                            "max_results": 10,
+                            "granularity": "hour",
+                            "start_time": start_time,
+                        },
+                    )
+                    if response.status_code == 200:
+                        payload = response.json()
+                        mentions = int(
+                            (payload.get("meta") or {}).get("total_tweet_count")
+                            or sum(
+                                int(item.get("tweet_count") or 0)
+                                for item in payload.get("data") or []
+                            )
+                        )
+                        counts_ok = True
+                    else:
+                        results["errors"]["x_counts"] = _x_collection_error(
+                            response, "recent-counts",
+                        )
+                search_token = wallet_token or shared_token
+                if search_token and (
+                    owner_address or int(asset.get("priority_tier") or 3) == 1
+                ):
+                    detail_response = await client.get(
+                        f"{X_API_URL}/tweets/search/recent",
+                        headers={"Authorization": f"Bearer {search_token}"},
+                        params={
+                            "query": query,
+                            "start_time": start_time,
+                            "max_results": 100,
                             "tweet.fields": "author_id,public_metrics,created_at",
                         },
                     )
                     if detail_response.status_code == 200:
                         posts = detail_response.json().get("data") or []
-                        active_authors = len({
-                            item.get("author_id") for item in posts if item.get("author_id")
-                        })
-                        engagements = sum(
-                            sum(
-                                int((item.get("public_metrics") or {}).get(key) or 0)
-                                for key in ("like_count", "reply_count", "retweet_count", "quote_count")
-                            )
-                            for item in posts
+                        search_ok = True
+                    else:
+                        results["errors"]["x_search"] = _x_collection_error(
+                            detail_response, "recent-search",
                         )
-            mentions = int(
-                (payload.get("meta") or {}).get("total_tweet_count")
-                or sum(int(item.get("tweet_count") or 0) for item in payload.get("data") or [])
+            if mentions is None and posts is not None:
+                # A user OAuth search is a useful fallback when App-level
+                # counts are unavailable. The value is explicitly a sample.
+                mentions = len(posts)
+            active_authors = (
+                len({item.get("author_id") for item in posts if item.get("author_id")})
+                if posts is not None else None
             )
-            metrics = {
-                "mentions_24h": mentions,
-                "posts_24h": mentions,
-                "active_authors_24h": active_authors,
-                "engagements_24h": engagements,
-                "engagement_rate": (
-                    round(engagements / max(mentions, 1), 6)
-                    if engagements is not None else None
-                ),
-                "confidence": 0.85,
-                "raw_summary": {"query": query, "provider_window": "recent-counts"},
-            }
-            _save_snapshot(
-                asset["asset_key"], "x", source_mode, metrics,
-                owner_address=owner_address if source_mode == "wallet-oauth" else None,
+            engagements = (
+                sum(
+                    sum(
+                        int((item.get("public_metrics") or {}).get(key) or 0)
+                        for key in ("like_count", "reply_count", "retweet_count", "quote_count")
+                    )
+                    for item in posts
+                )
+                if posts is not None else None
             )
-            results["providers"]["x"] = metrics
+            if counts_ok or search_ok:
+                source_mode = (
+                    "shared-counts+wallet-search"
+                    if counts_ok and wallet_token and search_ok
+                    else "wallet-oauth-search"
+                    if wallet_token and search_ok
+                    else "shared-api"
+                )
+                owner_scope = owner_address if wallet_token and search_ok else None
+                confidence = 0.85 if counts_ok else 0.65
+                window = "24h-counts" if counts_ok else "24h-search-sample"
+                metrics = {
+                    "mentions_24h": mentions,
+                    "posts_24h": mentions,
+                    "active_authors_24h": active_authors,
+                    "engagements_24h": engagements,
+                    "engagement_rate": (
+                        round(engagements / max(mentions or 0, 1), 6)
+                        if engagements is not None else None
+                    ),
+                    "confidence": confidence,
+                    "raw_summary": {
+                        "query": query,
+                        "provider_window": window,
+                        "sample_size": len(posts) if posts is not None else None,
+                    },
+                }
+                _save_snapshot(
+                    asset["asset_key"], "x", source_mode, metrics,
+                    owner_address=owner_scope,
+                )
+                results["providers"]["x"] = metrics
 
         if owner_address:
             await self._collect_telegram_for_owner(asset, owner_address, results)
@@ -1184,10 +1415,40 @@ class SocialCollector:
                 members_total += int(response.json().get("result") or 0)
                 success += 1
         if success:
+            community_ids = [int(item["id"]) for item in communities]
+            placeholders = ",".join("?" for _ in community_ids)
+            activity_count = 0
+            active_authors = 0
+            conn = get_connection()
+            try:
+                if community_ids:
+                    row = conn.execute(
+                        f"""SELECT COUNT(*) AS post_count,
+                                   COUNT(DISTINCT sender_hash) AS author_count
+                            FROM telegram_activity_events
+                            WHERE community_id IN ({placeholders})
+                              AND created_at >= ?""",
+                        (*community_ids, _iso(_utcnow() - timedelta(hours=24))),
+                    ).fetchone()
+                    activity_count = int(row["post_count"] or 0)
+                    active_authors = int(row["author_count"] or 0)
+                    conn.execute(
+                        f"""UPDATE social_communities SET last_sync_at = ?
+                            WHERE id IN ({placeholders})""",
+                        (_iso(), *community_ids),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
             metrics = {
                 "members": members_total,
+                "posts_24h": activity_count,
+                "active_authors_24h": active_authors,
                 "confidence": 0.95,
-                "raw_summary": {"connected_communities": success},
+                "raw_summary": {
+                    "connected_communities": success,
+                    "privacy_mode": "aggregate-only-no-message-text",
+                },
             }
             _save_snapshot(
                 asset["asset_key"], "telegram", "wallet-bot", metrics,
@@ -1311,11 +1572,15 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
 
             collection_task.add_done_callback(finish_collection)
             try:
-                await asyncio.wait_for(
+                collection_result = await asyncio.wait_for(
                     asyncio.shield(collection_task),
                     timeout=SOCIAL_INLINE_TIMEOUT_SECONDS,
                 )
                 context = latest_social_context(asset_key, owner_address=owner_address)
+                if collection_result.get("errors"):
+                    context["collection_errors"] = collection_result["errors"]
+                    first_error = next(iter(collection_result["errors"].values()))
+                    context["collection_error"] = first_error.get("message")
             except asyncio.TimeoutError:
                 # Keep collection running for the scheduler/RAG cache, but do
                 # not make the user wait through a slow social provider. The

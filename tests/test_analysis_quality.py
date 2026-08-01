@@ -239,6 +239,38 @@ class AnalysisQualityTests(unittest.TestCase):
         self.assertIn("identity is connected", rendered)
         self.assertNotIn("x, reddit, and channel-level", rendered)
 
+    def test_x_credit_failure_is_reported_as_action_required(self):
+        raw = raw_fixture()
+        raw["coingecko"]["community_data"] = {}
+        raw["social"] = {
+            "connected": False,
+            "binding_connected": True,
+            "metrics": [],
+            "rag_documents": [],
+            "providers": {
+                "x": {"status": "connected_no_data", "identity_connected": True},
+                "telegram": {"status": "not_connected"},
+                "reddit": {"status": "not_configured"},
+            },
+            "collection_errors": {
+                "x_counts": {
+                    "code": "credits_depleted",
+                    "message": "X API credits are depleted. Add credits to the X developer Project/App.",
+                },
+            },
+        }
+        self.agent.set_persona("operator")
+        report = self.agent._fallback_analyze(
+            "Pepe solana", raw,
+            {"writing_profile": infer_writing_profile("concise")},
+        )
+        gap = next(
+            item for item in report["data_gaps"]
+            if item["source"] == "X community metrics"
+        )
+        self.assertEqual(gap["status"], "action_required")
+        self.assertIn("credits are depleted", gap["impact"])
+
     def test_verified_social_metrics_change_operator_conclusion_and_actions(self):
         raw = raw_fixture()
         raw["coingecko"]["community_data"] = {}

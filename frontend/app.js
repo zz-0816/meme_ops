@@ -2311,6 +2311,11 @@ async function renderProfileSettings() {
                     <span class="private-pill">Wallet private</span>
                 </div>
                 <div id="socialConnections"><div class="social-connection-loading">Loading connection status...</div></div>
+                <div class="social-diagnostics-actions">
+                    <button class="btn-small" onclick="runSocialDiagnostics(false)">Run data connection test</button>
+                    <span>Tests provider API access without displaying credentials.</span>
+                </div>
+                <div id="socialDiagnostics"></div>
                 <p class="social-privacy-note">Access tokens are encrypted on the server. They are never shown to other users or returned to this browser.</p>
             </section>
             <div class="settings-actions">
@@ -2436,6 +2441,49 @@ async function loadSocialConnections(targetId = 'socialConnections', prominent =
     updateTopConnectionStatus();
 }
 
+function socialDiagnosticCard(provider, details) {
+    const ready = provider === 'x'
+        ? details.collector === 'ready'
+        : details.bot === 'ready';
+    const error = details.error || {};
+    const identity = details.identity_connected
+        ? 'Identity connected'
+        : 'Identity not connected';
+    let message = details.message || error.message || 'Provider test has not completed.';
+    if (provider === 'telegram' && ready && !details.identity_connected) {
+        message += ' Complete Connect Telegram to bind this wallet.';
+    }
+    if (provider === 'telegram' && details.identity_connected && !details.community_count) {
+        message += ' Bind a group or channel before community metrics can be collected.';
+    }
+    return `<article class="social-diagnostic-card ${ready ? 'is-ready' : 'is-action'}">
+        <div>${socialProviderLogo(provider)}</div>
+        <div><strong>${provider === 'x' ? 'X data API' : 'Telegram Bot API'}</strong>
+            <span>${escapeHtml(identity)}</span>
+            <p>${escapeHtml(message)}</p>
+            ${error.code ? `<code>${escapeHtml(error.code)} · HTTP ${escapeHtml(String(error.http_status || '—'))}</code>` : ''}
+        </div>
+    </article>`;
+}
+
+async function runSocialDiagnostics(force = false) {
+    const el = document.getElementById('socialDiagnostics');
+    if (!el) return;
+    el.innerHTML = '<div class="social-connection-loading">Testing X data access and Telegram Bot configuration…</div>';
+    try {
+        const data = await socialApi('/api/social/diagnostics', {
+            method: 'POST',
+            body: JSON.stringify({force}),
+        });
+        el.innerHTML = `<div class="social-diagnostics-grid">
+            ${socialDiagnosticCard('x', data.x || {})}
+            ${socialDiagnosticCard('telegram', data.telegram || {})}
+        </div>`;
+    } catch (error) {
+        el.innerHTML = `<div class="social-connection-error">${escapeHtml(error.message || 'Connection test failed.')}</div>`;
+    }
+}
+
 async function socialApi(path, options = {}) {
     const resp = await fetch(`${API_BASE}${path}`, {
         ...options,
@@ -2465,6 +2513,31 @@ async function connectSocialX() {
 async function connectSocialTelegram() {
     try {
         const data = await socialApi('/api/social/telegram/connect', {method: 'POST'});
+        window.memeOpsTelegramAuth = async telegramUser => {
+            try {
+                const result = await socialApi('/api/social/telegram/callback', {
+                    method: 'POST',
+                    body: JSON.stringify({...telegramUser, state:data.state}),
+                });
+                if (!result.connected) throw new Error('Telegram identity was not saved');
+                sessionStorage.removeItem('meme_ops_telegram_last_error');
+                document.getElementById('telegramLoginOverlay')?.remove();
+                await updateTopConnectionStatus();
+                if (document.getElementById('socialConnections')) {
+                    await loadSocialConnections('socialConnections');
+                }
+                if (document.getElementById('overviewSocialConnections')) {
+                    await loadSocialConnections('overviewSocialConnections', true);
+                }
+                showToast('Telegram identity connected. Bind a group or channel to collect member metrics.');
+            } catch (error) {
+                const message = error.message || 'Telegram login could not be verified.';
+                sessionStorage.setItem('meme_ops_telegram_last_error', message);
+                document.getElementById('telegramLoginOverlay')?.remove();
+                showToast(`Telegram: ${message}`);
+                location.hash = '#/telegram-guide';
+            }
+        };
         const overlay = document.createElement('div');
         overlay.className = 'quote-overlay';
         overlay.id = 'telegramLoginOverlay';
@@ -2485,7 +2558,7 @@ async function connectSocialTelegram() {
         script.src = 'https://telegram.org/js/telegram-widget.js?22';
         script.setAttribute('data-telegram-login', data.bot_username);
         script.setAttribute('data-size', 'large');
-        script.setAttribute('data-auth-url', data.callback_url);
+        script.setAttribute('data-onauth', 'memeOpsTelegramAuth(user)');
         script.onerror = () => {
             document.getElementById('telegramWidgetMount').innerHTML = `
                 <div class="social-connection-error">Telegram login could not load. Check browser content blocking or open the setup guide.</div>
@@ -2542,6 +2615,7 @@ async function renderTelegramGuidePage() {
                         <p class="step-intro"><strong>Project administrator action.</strong> Regular users never paste a Bot Token into meme_ops.</p>
                         <ol>
                             <li>Open <strong>@BotFather</strong>, choose the same Bot used by meme_ops, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
+                            <li>In @BotFather use <code>/setprivacy</code> and select <strong>Disable</strong> for this Bot if you want aggregate group activity metrics. Otherwise Telegram only sends commands and mentions to the Bot.</li>
                             <li>In this Railway service, add <code>TELEGRAM_BOT_USERNAME</code>, the matching <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_WEBHOOK_SECRET</code>, and <code>APP_PUBLIC_URL=${escapeHtml(window.location.origin)}</code>.</li>
                             <li>Redeploy the service. Sealed Railway values are supported: the application receives the value at runtime while the dashboard hides it.</li>
                             <li>Select <strong>Check current setup</strong> below. Bot Username and Bot Token must belong to the same BotFather Bot.</li>
@@ -2573,7 +2647,7 @@ async function renderTelegramGuidePage() {
                             <li>Add the configured meme_ops Bot to the Telegram group or channel.</li>
                             <li>In meme_ops select <strong>Bind group</strong> to create a code valid for 15 minutes.</li>
                             <li>As a group/channel administrator, send <code>/connect YOUR_CODE</code> inside that group or channel.</li>
-                            <li>Wait for the Bot confirmation. Member counts can then be collected and used as evidence in later reports.</li>
+                            <li>Wait for the Bot confirmation. Member counts and new aggregate activity after binding can then be used as evidence in later reports. Historical Telegram messages are not backfilled.</li>
                         </ol>
                     </div>
                 </article>

@@ -187,6 +187,31 @@ class SocialIntegrationTests(unittest.TestCase):
         pending = social._consume_oauth_state(state, "telegram")
         self.assertEqual(pending["owner_address"], "0xaaa")
 
+    def test_inline_telegram_callback_is_bound_to_authenticated_wallet(self):
+        state = social._save_oauth_state("0xaaa", "telegram")
+        payload = {
+            "state": state,
+            "id": "123",
+            "first_name": "Alice",
+            "username": "alice",
+            "auth_date": str(int(time.time())),
+        }
+        check = "\n".join(
+            f"{key}={payload[key]}" for key in sorted(payload) if key != "state"
+        )
+        secret = hashlib.sha256(b"123456:test-bot-token").digest()
+        payload["hash"] = hmac.new(
+            secret, check.encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        with self.assertRaisesRegex(ValueError, "Login state"):
+            social.complete_telegram_connection(payload, expected_owner="0xbbb")
+        result = social.complete_telegram_connection(
+            payload, expected_owner="0xaaa",
+        )
+        self.assertEqual(result["owner_address"], "0xaaa")
+        connection = social.list_connections("0xaaa")["connections"][0]
+        self.assertEqual(connection["username"], "alice")
+
     def test_telegram_bot_username_and_token_must_belong_to_same_bot(self):
         class FakeResponse:
             status_code = 200
@@ -274,6 +299,51 @@ class SocialIntegrationTests(unittest.TestCase):
     def test_collector_universe_never_drops_below_one_hundred(self):
         with patch.dict(os.environ, {"SOCIAL_ASSET_UNIVERSE_SIZE": "10"}):
             self.assertEqual(social.SocialCollector().universe_size, 100)
+
+    def test_x_payment_error_is_actionable_and_secret_free(self):
+        class FakeResponse:
+            status_code = 402
+            content = b'{"title":"Payment Required","detail":"credits depleted"}'
+
+            @staticmethod
+            def json():
+                return {"title": "Payment Required", "detail": "credits depleted"}
+
+        error = social._x_collection_error(FakeResponse(), "recent-counts")
+        self.assertEqual(error["code"], "credits_depleted")
+        self.assertIn("Add credits", error["message"])
+        self.assertNotIn("test-bot-token", str(error))
+
+    def test_bound_telegram_activity_is_aggregated_without_message_text(self):
+        conn = database.get_connection()
+        community_id = conn.execute(
+            """INSERT INTO social_communities
+               (owner_address, provider, external_community_id, community_name)
+               VALUES ('0xaaa', 'telegram', '-10042', 'DOGE Ops')"""
+        ).lastrowid
+        conn.commit()
+        conn.close()
+        result = social._record_telegram_activity(
+            {"update_id": 9001},
+            {
+                "message_id": 12,
+                "date": int(time.time()),
+                "text": "private message content must not be stored",
+                "from": {"id": 77},
+                "chat": {"id": -10042, "type": "supergroup"},
+            },
+        )
+        self.assertEqual(result["action"], "activity-recorded")
+        conn = database.get_connection()
+        row = conn.execute(
+            "SELECT * FROM telegram_activity_events WHERE community_id = ?",
+            (community_id,),
+        ).fetchone()
+        columns = set(row.keys())
+        conn.close()
+        self.assertNotIn("text", columns)
+        self.assertNotEqual(row["sender_hash"], "77")
+        self.assertEqual(len(row["sender_hash"]), 64)
 
 
 if __name__ == "__main__":
