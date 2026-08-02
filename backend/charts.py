@@ -499,9 +499,59 @@ def build_report_html_v2(report: dict) -> str:
     risk = str(report.get("risk_level") or "unknown")
     conclusion = report.get("executive_conclusion") or report.get("recommendation") or ""
     demo_notice = report.get("social_data_notice") if report.get("social_data_mode") == "synthetic-demo" else ""
+    style_applied = report.get("style_applied") or {}
+    generation_notice = report.get("generation_notice") or ""
+
+    status_labels = {
+        "verified": "Available",
+        "proxy": "Directional signal",
+        "inference": "Interpretation",
+        "not_connected": "Connection needed",
+        "connected_no_data": "Connected; data unavailable",
+        "action_required": "One more setup step",
+        "not_configured": "Not included",
+        "synthetic_demo": "Demo data",
+    }
 
     def esc(value):
         return html.escape(str(value or ""))
+
+    def user_safe_gap(item):
+        """Collapse provider/admin diagnostics into actions useful to an end user."""
+        source = str(item.get("source") or "")
+        source_lower = source.lower()
+        status = str(item.get("status") or "")
+        if "reddit" in source_lower or "wallet-level" in source_lower or "holder distribution" in source_lower:
+            return None
+        if "telegram" in source_lower:
+            impact = (
+                "Connect Telegram and bind the community you operate to include its activity in this report."
+                if status in {"not_connected", "action_required"}
+                else "Telegram is connected, but community metrics are temporarily unavailable."
+            )
+            return {"source": "Telegram community data", "status": status, "impact": impact}
+        if source_lower.startswith("x") or "x community" in source_lower:
+            impact = (
+                "Connect X to include current audience and engagement signals in this report."
+                if status == "not_connected"
+                else "X is connected, but asset-level community metrics are temporarily unavailable."
+            )
+            return {"source": "X community data", "status": status, "impact": impact}
+        return item
+
+    def user_safe_module_content(item):
+        content = str(item.get("content") or "")
+        lowered = content.lower()
+        admin_terms = (
+            "api credit", "api plan", "access tier", "tweet.read",
+            "webhook", "environment variable", "not configured in this release",
+        )
+        if any(term in lowered for term in admin_terms):
+            return (
+                "Live social metrics are unavailable for this report. Connect X and "
+                "bind a Telegram community to include audience and engagement evidence."
+            )
+        return content
 
     inferences = "".join(
         f"<li><b>{esc(item.get('inference'))}</b><span>{esc(item.get('evidence'))}"
@@ -510,8 +560,8 @@ def build_report_html_v2(report: dict) -> str:
     )
     modules = "".join(
         f"<section><header><b>{esc(item.get('title'))}</b>"
-        f"<em>{esc(item.get('status') or 'analysis')}</em></header>"
-        f"<p>{esc(item.get('content'))}</p></section>"
+        f"<em>{esc(status_labels.get(str(item.get('status') or ''), 'Analysis'))}</em></header>"
+        f"<p>{esc(user_safe_module_content(item))}</p></section>"
         for item in report.get("report_sections") or []
     )
     actions = "".join(
@@ -530,10 +580,16 @@ def build_report_html_v2(report: dict) -> str:
         + f"<p>{esc(item.get('detail') or item.get('notes'))}</p></section>"
         for item in report.get("dimensions") or []
     )
+    safe_gaps = [
+        safe for safe in (
+            user_safe_gap(item) for item in report.get("data_gaps") or []
+        ) if safe
+    ]
     gaps = "".join(
-        f"<li><b>{esc(item.get('source'))}</b><span>{esc(item.get('status'))}: "
+        f"<li><b>{esc(item.get('source'))}</b><span>"
+        f"{esc(status_labels.get(str(item.get('status') or ''), 'Unavailable'))}: "
         f"{esc(item.get('impact'))}</span></li>"
-        for item in report.get("data_gaps") or []
+        for item in safe_gaps
     )
     keywords = "".join(
         f"<i>{esc(value)}</i>" for value in (report.get("report_keywords") or [])[:12]
@@ -555,8 +611,13 @@ border-bottom:1px solid #292944}}.action>strong{{color:#8f87ff}}.action ul{{marg
 color:#bbb7ff;border-radius:999px;padding:3px 8px;font-size:11px}}.evidence{{border-left:3px solid #6c63ff}}
 .demo-notice{{margin:0 0 14px;padding:12px 14px;border:1px solid #ffb020;
 background:#33260d;color:#ffe1a3;border-radius:10px;font-weight:700}}
+.style-notice{{margin:0 0 14px;padding:10px 12px;border:1px solid #484477;
+background:#181733;color:#d8d5ff;border-radius:10px}}
+.generation-notice{{margin:8px 0 14px;color:#9693ad;font-size:12px}}
 </style></head><body>
 {f'<div class="demo-notice">{esc(demo_notice)}</div>' if demo_notice else ''}
+{f'<div class="style-notice"><b>Writing style applied:</b> {esc(style_applied.get("label"))}</div>' if style_applied.get('label') else ''}
+{f'<div class="generation-notice">{esc(generation_notice)}</div>' if generation_notice else ''}
 <h1>{esc(token.get('name') or 'Meme')} {f"({esc(str(token.get('symbol')).upper())})" if token.get('symbol') else ""}</h1>
 <p class="meta">{esc(persona)} · score {score:.1f}/10 · signal level {esc(risk)}</p>
 <div class="verdict"><b>{esc(report.get('decision_label') or 'Executive Conclusion')}</b>
@@ -566,7 +627,7 @@ background:#33260d;color:#ffe1a3;border-radius:10px;font-weight:700}}
 {"<h2>Action Plan</h2>" + actions if actions else ""}
 <h2>Supporting Evidence</h2>{dimensions}
 <div class="verdict"><b>Recommendation</b><p>{esc(report.get('recommendation'))}</p></div>
-{"<h2>Data Connections & Gaps</h2><ul>" + gaps + "</ul>" if gaps else ""}
+{"<h2>Data Availability</h2><ul>" + gaps + "</ul>" if gaps else ""}
 {"<h2>Report Keywords</h2><div class='tags'>" + keywords + "</div>" if keywords else ""}
 </body></html>"""
 

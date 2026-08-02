@@ -201,6 +201,20 @@ class StaticProductRequirementsTests(unittest.TestCase):
             self.assertIn(marker, provider)
         self.assertIn("PINATA_JWT", provider)
 
+    def test_report_generation_uses_fast_non_thinking_mode_and_user_safe_status(self):
+        agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
+        charts = (ROOT / "backend" / "charts.py").read_text(encoding="utf-8")
+        for marker in (
+            "DEEPSEEK_REPORT_TIMEOUT_SECONDS", "DEEPSEEK_THINKING_ENABLED",
+            '"type": (', "asyncio.wait_for", "DEEPSEEK_MAX_TOKENS_COMPACT",
+        ):
+            self.assertIn(marker, agent)
+        self.assertNotIn("for attempt in range(2)", agent)
+        self.assertIn("AI-personalized report", APP)
+        self.assertIn("Validated source-based report", APP)
+        self.assertNotIn("report._llm_error", APP)
+        self.assertIn("Data Availability", charts)
+
     def test_community_uses_compact_plus_composer_and_views_are_static(self):
         self.assertIn("compose-fab", APP)
         self.assertIn("openPostComposer", APP)

@@ -1,4 +1,4 @@
-"""Pure, dependency-free parsing for conversational analysis requests."""
+"""Dependency-free parsing for conversational analysis requests."""
 
 import re
 
@@ -12,24 +12,36 @@ CHAIN_ALIASES = {
 
 
 def infer_writing_profile(text: str) -> dict:
-    lowered = str(text or "").lower()
+    """Translate natural-language style directions into a strict writing contract."""
+    lowered = str(text or "").strip().lower()
     academic = any(word in lowered for word in (
         "academic", "research paper", "professional terminology", "methodology",
-        "学术", "论文", "专业术语", "研究报告",
+        "学术", "论文", "专业术语", "研究报告", "专业化",
     ))
     friendly = any(word in lowered for word in (
-        "friendly", "approachable", "beginner", "casual", "亲近", "友好", "通俗",
+        "friendly", "approachable", "beginner", "casual", "plain language",
+        "亲近", "友好", "通俗", "易懂", "容易理解", "口语化",
     ))
     concise = any(word in lowered for word in (
-        "concise", "brief", "short", "简洁", "精简", "简短",
+        "concise", "brief", "short", "clear", "key points", "plain language",
+        "简洁", "精简", "简短", "清晰", "重点", "易懂", "容易理解",
     ))
     detailed = academic or any(word in lowered for word in (
-        "detailed", "in-depth", "comprehensive", "详细", "深入", "完整",
+        "detailed", "in-depth", "comprehensive", "specific", "actionable",
+        "详细", "深入", "完整", "具体", "可执行",
+    ))
+    plain = friendly or any(word in lowered for word in (
+        "simple", "clear", "plain", "no jargon", "清晰", "简单", "直白",
+        "不要术语", "少术语", "容易理解", "易懂",
     ))
     return {
         "tone": "academic" if academic else "friendly" if friendly else "analytical",
-        "depth": "academic" if academic else "detailed" if detailed else "concise" if concise else "standard",
+        "depth": (
+            "academic" if academic else "detailed" if detailed
+            else "concise" if concise else "standard"
+        ),
         "length": "extended" if detailed else "compact" if concise else "standard",
+        "clarity": "technical" if academic else "plain" if plain else "professional",
     }
 
 
@@ -46,7 +58,7 @@ def extract_analysis_intent(prompt: str) -> dict:
     token_query = address.group(0) if address else ""
     if not token_query:
         patterns = [
-            r"(?:分析(?:的是|一下|下)?|币种(?:是|为)?)\s*[\"'“”]?\s*([A-Za-z0-9._-]{2,32})",
+            r"(?:分析(?:的是|一下|一个)?|币种(?:是|为))\s*[\"'“”]?\s*([A-Za-z0-9._-]{2,32})",
             r"([A-Za-z0-9._-]{2,32})\s*(?:是|属于|在)\s*(?:solana|sol|ethereum|eth|bsc|binance|base|ton|monad)\s*链?",
             r"(?:analy[sz]e|research|review)\s+(?:the\s+)?([A-Za-z0-9._-]{2,32})",
         ]

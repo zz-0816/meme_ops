@@ -20,7 +20,7 @@ from image_provider import (
     prepare_onchain_metadata,
 )
 from intent import infer_writing_profile
-from charts import generate_all_charts
+from charts import build_report_html_v2, generate_all_charts
 
 
 def raw_fixture():
@@ -117,6 +117,68 @@ class AnalysisQualityTests(unittest.TestCase):
         self.assertIn("methodologically limited", detailed["dimensions"][2]["detail"])
         self.assertNotIn("methodologically limited", concise["dimensions"][2]["detail"])
 
+    def test_plain_concise_style_changes_visible_report_modules(self):
+        self.agent.set_persona("operator")
+        default_intent = {
+            "writing_profile": infer_writing_profile(""),
+            "style_instruction": "",
+        }
+        concise_intent = {
+            "writing_profile": infer_writing_profile("简洁清晰容易理解"),
+            "style_instruction": "简洁清晰容易理解",
+        }
+        default_report = self.agent._apply_writing_style(
+            self.agent._fallback_analyze("Pepe solana", self.raw, default_intent),
+            default_intent,
+        )
+        concise_report = self.agent._apply_writing_style(
+            self.agent._fallback_analyze("Pepe solana", self.raw, concise_intent),
+            concise_intent,
+        )
+        default_words = len(" ".join(
+            section["content"] for section in default_report["report_sections"]
+        ).split())
+        concise_words = len(" ".join(
+            section["content"] for section in concise_report["report_sections"]
+        ).split())
+        self.assertLess(concise_words, default_words)
+        self.assertEqual(
+            concise_report["style_applied"]["label"],
+            "Concise, friendly, and easy to understand",
+        )
+        self.assertNotEqual(
+            default_report["executive_conclusion"],
+            concise_report["executive_conclusion"],
+        )
+
+    def test_doge_and_shib_operator_plans_are_asset_specific(self):
+        self.agent.set_persona("operator")
+        intent = {
+            "writing_profile": infer_writing_profile("clear professional report"),
+            "style_instruction": "clear professional report",
+        }
+        doge_raw = copy.deepcopy(self.raw)
+        doge_raw["dexscreener"]["pairs"][0]["baseToken"].update({
+            "name": "Dogecoin", "symbol": "DOGE",
+        })
+        doge_raw["coingecko"].update({"name": "Dogecoin", "symbol": "doge"})
+        shib_raw = copy.deepcopy(self.raw)
+        shib_raw["dexscreener"]["pairs"][0]["baseToken"].update({
+            "name": "Shiba Inu", "symbol": "SHIB",
+        })
+        shib_raw["coingecko"].update({"name": "Shiba Inu", "symbol": "shib"})
+        doge = self.agent._fallback_analyze("Dogecoin", doge_raw, intent)
+        shib = self.agent._fallback_analyze("Shiba Inu", shib_raw, intent)
+        doge_plan = " ".join(
+            action for day in doge["action_plan"] for action in day["actions"]
+        )
+        shib_plan = " ".join(
+            action for day in shib["action_plan"] for action in day["actions"]
+        )
+        self.assertIn("DOGE remix", doge_plan)
+        self.assertIn("Shibarium", shib_plan)
+        self.assertNotEqual(doge_plan, shib_plan)
+
     def test_style_layer_cannot_change_scores_risk_or_core_recommendation(self):
         core = self.agent._fallback_analyze(
             "Pepe solana",
@@ -152,6 +214,55 @@ class AnalysisQualityTests(unittest.TestCase):
             [item["score"] for item in core["dimensions"]],
         )
         self.assertTrue(enforced["analysis_core"]["locked"])
+
+    def test_safe_personalized_recommendation_is_visible(self):
+        core = self.agent._fallback_analyze(
+            "Pepe solana", self.raw,
+            {"writing_profile": infer_writing_profile("clear professional")},
+        )
+        styled = {
+            "recommendation": (
+                "Run a focused creator activation around the asset's native narrative, "
+                "then compare repeat participation before scaling."
+            ),
+            "dimensions": core["dimensions"],
+        }
+        enforced = self.agent._enforce_analysis_core(styled, core)
+        self.assertEqual(enforced["recommendation"], styled["recommendation"])
+
+    def test_report_html_hides_admin_only_data_diagnostics(self):
+        report = self.agent._fallback_analyze(
+            "Pepe solana", self.raw,
+            {"writing_profile": infer_writing_profile("clear professional")},
+        )
+        report["data_gaps"] = [
+            {
+                "source": "X community metrics",
+                "status": "connected_no_data",
+                "impact": "X API credits are depleted; check tweet.read permissions.",
+            },
+            {
+                "source": "Reddit community metrics",
+                "status": "not_configured",
+                "impact": "Reddit ingestion is not configured in this release.",
+            },
+            {
+                "source": "Wallet-level holder distribution",
+                "status": "not_connected",
+                "impact": "A chain explorer source is required.",
+            },
+        ]
+        report["report_sections"] = [{
+            "title": "Community Evidence & Gaps",
+            "status": "connected_no_data",
+            "content": "The API plan did not return data; check access tier and tweet.read.",
+        }]
+        rendered = build_report_html_v2(report)
+        self.assertNotIn("credits", rendered.lower())
+        self.assertNotIn("tweet.read", rendered.lower())
+        self.assertNotIn("reddit", rendered.lower())
+        self.assertNotIn("wallet-level", rendered.lower())
+        self.assertIn("X is connected", rendered)
 
     def test_self_generated_writing_style_matrix(self):
         cases = {
@@ -234,9 +345,9 @@ class AnalysisQualityTests(unittest.TestCase):
         gaps = {item["source"]: item for item in report["data_gaps"]}
         self.assertEqual(gaps["X community metrics"]["status"], "connected_no_data")
         self.assertEqual(gaps["Telegram community metrics"]["status"], "action_required")
-        self.assertEqual(gaps["Reddit community metrics"]["status"], "not_configured")
+        self.assertNotIn("Reddit community metrics", gaps)
         rendered = " ".join(item["impact"] for item in gaps.values()).lower()
-        self.assertIn("identity is connected", rendered)
+        self.assertIn("x is connected", rendered)
         self.assertNotIn("x, reddit, and channel-level", rendered)
 
     def test_x_credit_failure_is_reported_as_action_required(self):
@@ -268,8 +379,9 @@ class AnalysisQualityTests(unittest.TestCase):
             item for item in report["data_gaps"]
             if item["source"] == "X community metrics"
         )
-        self.assertEqual(gap["status"], "action_required")
-        self.assertIn("credits are depleted", gap["impact"])
+        self.assertEqual(gap["status"], "connected_no_data")
+        self.assertIn("temporarily unavailable", gap["impact"])
+        self.assertNotIn("credits", gap["impact"].lower())
 
     def test_verified_social_metrics_change_operator_conclusion_and_actions(self):
         raw = raw_fixture()

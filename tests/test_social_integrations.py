@@ -531,6 +531,38 @@ class SocialIntegrationTests(unittest.TestCase):
             telegram_metric["raw_summary"]["synthetic"], True,
         )
 
+    def test_demo_mode_seeds_a_directly_searched_non_top_ten_asset(self):
+        raw = {
+            "search_query": "BitShiba",
+            "chain_hint": "bsc",
+            "_sources": ["DexScreener", "CoinGecko"],
+            "dexscreener": {
+                "pairs": [{
+                    "chainId": "bsc",
+                    "baseToken": {
+                        "name": "BitShiba", "symbol": "SHIBA",
+                        "address": "0x1111111111111111111111111111111111111111",
+                    },
+                }],
+            },
+            "coingecko": {
+                "id": "bitshiba",
+                "name": "BitShiba",
+                "symbol": "shiba",
+                "links": {},
+                "market_data": {},
+            },
+        }
+        with patch.dict(os.environ, {"DEMO_SOCIAL_DATA_ENABLED": "true"}):
+            enriched = asyncio.run(social.enrich_raw_data_with_social(raw, None))
+        context = enriched["social"]
+        self.assertTrue(context["demo_mode"])
+        self.assertEqual(context["data_provenance"], "synthetic-demo-not-live")
+        self.assertEqual(
+            {item["provider"] for item in context["metrics"]},
+            {"x", "telegram"},
+        )
+
     def test_railway_demo_default_can_be_explicitly_disabled(self):
         previous = os.environ.pop("DEMO_SOCIAL_DATA_ENABLED", None)
         try:

@@ -1809,8 +1809,8 @@ function renderAnalysisResult(data) {
     state.reportRequests[analysisId] = sourceRequest;
     const container = ensureWorkspaceResults();
     const generationMode = report.generation_mode === 'deepseek'
-        ? `${escapeHtml(report.generation_model || 'DeepSeek')} analysis`
-        : 'Rules-engine fallback';
+        ? 'AI-personalized report'
+        : 'Validated source-based report';
     const generationClass = report.generation_mode === 'deepseek' ? 'model-live' : 'model-fallback';
     const performance = report.performance_ms || {};
     const performanceLabel = Number(performance.total) > 0
@@ -1834,7 +1834,9 @@ function renderAnalysisResult(data) {
                             ? `<a class="contract-link" href="https://dexscreener.com/search?q=${encodeURIComponent(contractAddress)}" target="_blank" rel="noopener noreferrer" title="View ${contractAddress} on DexScreener">${shortenAddr(contractAddress)} ↗</a>`
                             : '—'}
                     </div>
-                    <div class="model-status ${generationClass}" title="${escapeHtml(report._llm_error || performanceTitle)}">${generationMode}${performanceLabel}</div>
+                    <div class="model-status ${generationClass}" title="${escapeHtml(performanceTitle)}">${generationMode}${performanceLabel}</div>
+                    ${report.style_applied?.label ? `<div class="report-style-applied">Writing style: ${escapeHtml(report.style_applied.label)}</div>` : ''}
+                    ${report.generation_mode !== 'deepseek' && report.generation_notice ? `<div class="generation-user-note">${escapeHtml(report.generation_notice)}</div>` : ''}
                     ${report.asset_match === 'reference-only' ? '<div class="asset-match-warning">No exact DEX pair was found on the requested chain; unrelated assets were excluded and reference data is shown.</div>' : ''}
                 </div>
                 <button class="btn-small" onclick="addToWatchlistFromResult('${(token.name||'').replace(/'/g,"\\'")}','${(token.chain||data.chain||'unknown').replace(/'/g,"\\'")}','${(token.symbol||'').replace(/'/g,"\\'")}','${contractAddress.replace(/'/g,"\\'")}')" title="Add to watchlist">⭐</button>

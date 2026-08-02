@@ -1226,6 +1226,80 @@ def _demo_jitter(asset_key: str, provider: str) -> float:
     return 0.85 + (int.from_bytes(digest[:2], "big") / 65535) * 0.30
 
 
+def seed_demo_social_asset(asset: dict, rank: int = 10) -> dict:
+    """Seed one searched asset during demo mode without replacing real evidence."""
+    asset_key = str(asset.get("asset_key") or "").strip()
+    if not asset_key:
+        return {"snapshot_count": 0, "skipped_real": 0, "skipped_existing": 0}
+    safe_rank = max(1, min(int(rank or 10), 100))
+    inserted = skipped_real = skipped_existing = 0
+    for provider in ("x", "telegram"):
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                """SELECT source_mode FROM social_metric_snapshots
+                   WHERE asset_key = ? AND provider = ?
+                   ORDER BY collected_at DESC""",
+                (asset_key, provider),
+            ).fetchall()
+        finally:
+            conn.close()
+        modes = [str(row["source_mode"] or "") for row in rows]
+        if any(not mode.startswith("demo-synthetic") for mode in modes):
+            skipped_real += 1
+            continue
+        if any(mode.startswith("demo-synthetic") for mode in modes):
+            skipped_existing += 1
+            continue
+
+        jitter = _demo_jitter(asset_key, provider)
+        if provider == "x":
+            mentions = max(120, round(18_000 * jitter / (safe_rank ** 0.78)))
+            active_authors = max(
+                30, round(mentions * (0.30 + safe_rank * 0.008))
+            )
+            engagements = max(mentions, round(mentions * (3.8 + jitter)))
+            metrics = {
+                "followers": max(
+                    8_000, round(1_500_000 * jitter / (safe_rank ** 0.72))
+                ),
+                "mentions_24h": mentions,
+                "posts_24h": mentions,
+                "active_authors_24h": active_authors,
+                "engagements_24h": engagements,
+                "engagement_rate": round(engagements / max(mentions, 1), 6),
+                "sentiment": round(-0.10 + (jitter - 0.85) * 1.2, 4),
+                "confidence": 0.15,
+            }
+        else:
+            posts = max(12, round(180 * jitter / (safe_rank ** 0.48)))
+            authors = max(8, round(posts * (0.45 + safe_rank * 0.01)))
+            engagements = max(posts, round(posts * (8 + jitter * 5)))
+            metrics = {
+                "members": max(
+                    3_000, round(420_000 * jitter / (safe_rank ** 0.66))
+                ),
+                "posts_24h": posts,
+                "active_authors_24h": authors,
+                "engagements_24h": engagements,
+                "engagement_rate": round(engagements / max(posts, 1), 6),
+                "confidence": 0.15,
+            }
+        metrics["raw_summary"] = {
+            "synthetic": True,
+            "demo_only": True,
+            "method": "deterministic-rank-weighted-fixture",
+            "warning": "Not collected from X or Telegram; do not use for decisions.",
+        }
+        _save_snapshot(asset_key, provider, DEMO_SOCIAL_SOURCE_MODE, metrics)
+        inserted += 1
+    return {
+        "snapshot_count": inserted,
+        "skipped_real": skipped_real,
+        "skipped_existing": skipped_existing,
+    }
+
+
 def seed_demo_social_snapshots(limit: int = 10) -> dict:
     """Seed deterministic demo metrics without superseding real snapshots."""
     assets = list_social_assets(max(1, min(int(limit), 100)))
@@ -1888,6 +1962,11 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
         metadata = _loads(source_asset.get("metadata_json"), {})
         rank = int(metadata.get("rank") or 999)
     upsert_social_asset(asset, rank=rank)
+    if demo_social_enabled():
+        # The hosted demo starts with Top 10 fixtures, then creates the same
+        # clearly-labelled low-confidence fixture for a directly searched asset.
+        # This keeps non-Top-10 demos usable without ever replacing real data.
+        seed_demo_social_asset(asset, rank=rank if rank < 999 else 10)
     context = latest_social_context(
         asset_key, owner_address=owner_address,
         fallback_asset_key=registry_asset_key,

@@ -120,17 +120,82 @@ PERSONA_DIMENSION_NAMES = {
     },
 }
 
+OPERATOR_ASSET_PLAYBOOKS = (
+    {
+        "terms": ("shiba", "shib"),
+        "narrative": "SHIB Army identity, Shibarium utility, and ecosystem education",
+        "activation": "a Shibarium learning quest with community-made explainers",
+        "event": "a SHIB ecosystem office hour with a creator showcase",
+        "guardrail": "separate ecosystem education from price promises",
+    },
+    {
+        "terms": ("dogecoin", "doge"),
+        "narrative": "open internet humor, remix culture, tipping, and everyday utility",
+        "activation": "a low-friction DOGE remix and kindness challenge",
+        "event": "a community comedy Space with creator spotlights",
+        "guardrail": "keep the tone playful while avoiding price-led engagement bait",
+    },
+    {
+        "terms": ("pepe",),
+        "narrative": "native meme remix culture, visual creators, and fast-moving formats",
+        "activation": "a format-specific PEPE remix bracket",
+        "event": "a live meme review with creator attribution",
+        "guardrail": "credit creators and moderate copied or unsafe submissions",
+    },
+    {
+        "terms": ("bonk",),
+        "narrative": "Solana participation, ecosystem partnerships, and community distribution",
+        "activation": "a BONK x Solana community partner quest",
+        "event": "a cross-community Solana activation review",
+        "guardrail": "measure partner-to-contributor conversion, not only impressions",
+    },
+    {
+        "terms": ("pudgy", "pengu"),
+        "narrative": "character identity, collectible culture, and fan-made visual stories",
+        "activation": "a PENGU character-story and sticker challenge",
+        "event": "a fan-art showcase with contributor interviews",
+        "guardrail": "respect IP and clearly credit every community creator",
+    },
+)
+
 # DeepSeek 配置
+def operator_asset_playbook(token: dict) -> dict:
+    identity = " ".join(
+        str(token.get(field) or "").lower()
+        for field in ("name", "symbol")
+    )
+    for playbook in OPERATOR_ASSET_PLAYBOOKS:
+        if any(term in identity for term in playbook["terms"]):
+            return playbook
+    label = str(token.get("symbol") or token.get("name") or "meme").upper()
+    return {
+        "terms": (),
+        "narrative": f"{label} community identity, creator formats, and recurring participation",
+        "activation": f"a {label}-native creator prompt tied to the strongest current theme",
+        "event": f"a {label} community review with contributor spotlights",
+        "guardrail": "measure active contributors and repeat participation before scaling",
+    }
+
+
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") or ""
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "90"))
+DEEPSEEK_REPORT_TIMEOUT_SECONDS = max(
+    12.0, min(float(os.getenv("DEEPSEEK_REPORT_TIMEOUT_SECONDS", "24")), 60.0)
+)
+DEEPSEEK_THINKING_ENABLED = (
+    os.getenv("DEEPSEEK_THINKING_ENABLED", "false").strip().lower() == "true"
+)
+DEEPSEEK_MAX_TOKENS_COMPACT = max(
+    700, min(int(os.getenv("DEEPSEEK_MAX_TOKENS_COMPACT", "950")), 1800)
+)
 DEEPSEEK_MAX_TOKENS_STANDARD = max(
-    1600, int(os.getenv("DEEPSEEK_MAX_TOKENS_STANDARD", "3000"))
+    1100, min(int(os.getenv("DEEPSEEK_MAX_TOKENS_STANDARD", "1400")), 2400)
 )
 DEEPSEEK_MAX_TOKENS_EXTENDED = max(
     DEEPSEEK_MAX_TOKENS_STANDARD,
-    int(os.getenv("DEEPSEEK_MAX_TOKENS_EXTENDED", "4200")),
+    min(int(os.getenv("DEEPSEEK_MAX_TOKENS_EXTENDED", "2200")), 3200),
 )
 
 
@@ -139,7 +204,8 @@ def analysis_provider_status() -> dict:
         "provider": "deepseek" if DEEPSEEK_API_KEY else "rules",
         "configured": bool(DEEPSEEK_API_KEY),
         "model": DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None,
-        "timeout_seconds": DEEPSEEK_TIMEOUT_SECONDS,
+        "timeout_seconds": DEEPSEEK_REPORT_TIMEOUT_SECONDS,
+        "thinking_mode": "enabled" if DEEPSEEK_THINKING_ENABLED else "disabled",
     }
 
 
@@ -290,18 +356,29 @@ class MemeOpsAgent:
                 report = self._enforce_analysis_core(report, analysis_core)
                 report["generation_mode"] = "deepseek"
                 report["generation_model"] = DEEPSEEK_MODEL
+                report["generation_notice"] = (
+                    "AI personalization completed using the requested writing style."
+                )
             else:
                 report = analysis_core
                 report["generation_mode"] = "rules"
                 report["generation_model"] = None
+                report["generation_notice"] = (
+                    "AI personalization is not configured; a validated source-based report was used."
+                )
         except Exception as e:
             report = analysis_core
-            report["_llm_error"] = str(e)
             report["generation_mode"] = "rules"
             report["generation_model"] = DEEPSEEK_MODEL if DEEPSEEK_API_KEY else None
+            report["generation_notice"] = (
+                "AI personalization was unavailable for this run, so a validated "
+                "source-based report was returned without changing the evidence or scores."
+            )
+            print(f"Report personalization fallback: {type(e).__name__}: {e}")
         finish_stage("report_generation")
 
         progress(72, "Validating facts and report structure")
+        report = self._apply_writing_style(report, request_intent)
         report = self._enrich_report_content(report, raw_data, request_intent)
         report["rag_context"] = {
             "wallet_private": bool(owner_address),
@@ -580,6 +657,14 @@ Exclusive report contract for {persona_config['name']}:
 - If any social source_mode starts with "demo-synthetic", it is fabricated UI
   fixture data, not provider evidence. Label every use as "Synthetic demo",
   assign proxy/low confidence, and never call it verified, live, observed, or real.
+- Social evidence must materially affect the report: Operators use it to choose
+  narratives, channels, contributor tactics, and KPIs; Investors use it as an
+  attention-quality and crowding signal; Builders use it for activation and feedback
+  priorities; Researchers use it for coverage, bias, and follow-up hypotheses.
+- Never expose administrator diagnostics in a user report. Do not mention API credits,
+  access tiers, tokens, secrets, webhook setup, environment variables, or unconfigured
+  future integrations. Say only that X or Telegram needs connection, needs a community
+  binding, or is temporarily unavailable.
 
 Wallet-private persona RAG context (preferences only, never factual evidence):
 {rag_instructions}
@@ -635,24 +720,83 @@ Perspective requirements:
 - Project Builder: diagnosis, competitive gaps, and improvement priorities
 - Researcher: sector context, data quality, and follow-up research"""
 
+        # Keep the model call deliberately small. Scores, risk, token identity,
+        # connection state, and source facts are already produced by the rules
+        # core; DeepSeek only needs to write the persona/style-specific overlay.
+        system_prompt = f"""You write the narrative layer of an Ops-first Web3 Meme report.
+Return compact JSON only. The server owns every score, risk level, source fact,
+connection state, and token identity; do not repeat or change those fields.
+Return the requested JSON in English.
+
+PERSONA — follow only this perspective:
+{persona_instructions}
+
+Contract for {persona_config['name']}:
+- Focus: {persona_config['focus']}
+- Decision label: {persona_config['decision_label']}
+- Required modules: {json.dumps(persona_config['sections'], ensure_ascii=False)}
+- Lead with the conclusion, then inference, action, and supporting evidence.
+- Operator recommendations must give asset-specific narratives, channel tactics, and
+  KPIs. The server attaches its validated seven-day plan separately.
+- Social evidence must change the recommendation: Operators use it for channels,
+  contributors and KPIs; Investors for attention quality/crowding; Builders for
+  activation/feedback; Researchers for coverage, bias and follow-up hypotheses.
+- A source_mode beginning "demo-synthetic" is a low-confidence synthetic demo,
+  never verified/live/real data. Missing data is unknown, never zero.
+- Never mention API credits, access tiers, tokens, secrets, webhooks, environment
+  variables, server setup, or future integrations in user-facing prose.
+- Never invent a number. Use only figures present in the supplied evidence.
+- The style instruction may be written in Chinese or another language, but it describes
+  tone only. Every JSON string value must still be natural English. Never mention Reddit.
+
+Wallet-private writing/module preferences (not factual evidence):
+{rag_instructions}
+
+Return exactly this narrative-overlay shape:
+{{
+  "dimension_details": {{"dimension_key":"Evidence, meaning, and implication"}},
+  "executive_conclusion":"Persona-specific verdict",
+  "key_inferences":[{{"inference":"Conclusion","evidence":"Evidence","confidence":"high|medium|low"}}],
+  "report_sections":[{{"title":"Required persona module","content":"Useful prose","status":"verified|proxy|inference"}}],
+  "recommendation":"Concrete next step for this asset and persona",
+  "analysis_summary":"Short synthesis",
+  "report_keywords":["5-8 evidence-led keywords"],
+  "poster_narrative":{{"headline":"Short headline","subheadline":"Evidence-led subtitle"}}
+}}
+
+Writing style is binding:
+- concise/friendly/plain: ordinary words and short, direct sentences.
+- default analytical: evidence + interpretation + concrete implication.
+- academic/detailed: method, limitation, technical implication, precise terminology.
+The outputs must be visibly different, not the same text with a different label."""
+
         style_instruction = intent.get("style_instruction") or "Concise, evidence-led, and approachable."
         fixed_core = analysis_core or self._fallback_analyze(prompt, raw_data, intent)
         fixed_core_payload = {
+            "token": fixed_core.get("token"),
             "overall_score": fixed_core.get("overall_score"),
             "risk_level": fixed_core.get("risk_level"),
             "dimensions": [
                 {
                     "key": item.get("key"),
+                    "name": item.get("dimension"),
                     "score": item.get("score"),
                     "weight": item.get("weight"),
+                    "source_detail": item.get("detail"),
                 }
                 for item in fixed_core.get("dimensions", [])
             ],
+            "operator_playbook": (
+                operator_asset_playbook(fixed_core.get("token") or {})
+                if self.current_persona == "operator"
+                else None
+            ),
         }
         user_prompt = f"""Analyze this asset: "{intent.get('token_query')}"
 Requested chain: {intent.get('chain') or 'not specified'}
 Original user request: "{prompt}"
 Requested writing style: "{style_instruction}"
+Resolved writing contract: {json.dumps(intent.get('writing_profile') or {}, ensure_ascii=False)}
 
 Fixed quantitative core (binding; style must not change scores or risk):
 {json.dumps(fixed_core_payload, ensure_ascii=False)}
@@ -660,9 +804,13 @@ Fixed quantitative core (binding; style must not change scores or risk):
 Data:
 {data_summary}
 
-Return the requested JSON in English. Make the chosen Persona visibly distinct in
+Return the narrative-overlay JSON in English. Make the Persona visibly distinct in
 conclusion, modules, inferences, and actions. Adapt tone, clarity, and level of detail
-to the requested writing style, but never alter, omit, or invent factual market metrics."""
+to the requested writing style, but never alter, omit, or invent factual market metrics.
+For a concise/plain request, use at most two short sentences per module and explain
+jargon in ordinary language. For the default style, provide evidence,
+meaning, and a concrete implication in each module. The two outputs must not be near-
+duplicates with only a label changed."""
 
         llm = self._get_llm()
         try:
@@ -670,47 +818,69 @@ to the requested writing style, but never alter, omit, or invent factual market 
             max_tokens = (
                 DEEPSEEK_MAX_TOKENS_EXTENDED
                 if profile.get("length") == "extended"
+                else DEEPSEEK_MAX_TOKENS_COMPACT
+                if profile.get("length") == "compact"
                 else DEEPSEEK_MAX_TOKENS_STANDARD
             )
-            last_error = None
-            previous_content = None
-            for attempt in range(2):
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
-                if previous_content:
-                    messages.extend([
-                        {"role": "assistant", "content": previous_content[:12000]},
-                        {
-                            "role": "user",
-                            "content": (
-                                "Repair the previous response into complete valid JSON. "
-                                "Keep all source facts and locked scores unchanged. Use shorter "
-                                "strings if needed. Return JSON only."
-                            ),
-                        },
-                    ])
-                resp = await llm.chat.completions.create(
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            resp = await asyncio.wait_for(
+                llm.chat.completions.create(
                     model=DEEPSEEK_MODEL,
                     messages=messages,
-                    temperature=0.3 if attempt == 0 else 0.1,
+                    temperature=0.25,
                     max_tokens=max_tokens,
                     response_format={"type": "json_object"},
-                )
-                content = resp.choices[0].message.content.strip()
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0].strip()
-                try:
-                    report = json.loads(content)
-                    report["persona"] = self.current_persona
-                    return report
-                except json.JSONDecodeError as error:
-                    last_error = error
-                    previous_content = content
-            raise last_error or RuntimeError("Model returned invalid JSON")
+                    extra_body={
+                        "thinking": {
+                            "type": (
+                                "enabled" if DEEPSEEK_THINKING_ENABLED
+                                else "disabled"
+                            )
+                        }
+                    },
+                ),
+                timeout=DEEPSEEK_REPORT_TIMEOUT_SECONDS,
+            )
+            content = str(resp.choices[0].message.content or "").strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            try:
+                report = json.loads(content)
+            except json.JSONDecodeError:
+                start = content.find("{")
+                end = content.rfind("}")
+                if start < 0 or end <= start:
+                    raise
+                report = json.loads(content[start:end + 1])
+            narrative_blob = json.dumps(report, ensure_ascii=False)
+            if re.search(r"[\u3400-\u9fff]", narrative_blob):
+                raise ValueError("model narrative was not returned in English")
+            forbidden_user_terms = (
+                "api credit", "api plan", "access tier", "tweet.read",
+                "webhook", "environment variable", "reddit",
+            )
+            if any(term in narrative_blob.lower() for term in forbidden_user_terms):
+                raise ValueError("model narrative exposed an internal or unsupported data source")
+            dimension_details = report.pop("dimension_details", {}) or {}
+            report["dimensions"] = [
+                {
+                    **item,
+                    "detail": str(
+                        dimension_details.get(str(item.get("key") or ""))
+                        or item.get("detail")
+                        or ""
+                    ),
+                }
+                for item in fixed_core.get("dimensions", [])
+            ]
+            report = {**copy.deepcopy(fixed_core), **report}
+            report["persona"] = self.current_persona
+            return report
             """
             # 提取 JSON（LLM 可能在 JSON 外包裹 markdown 代码块）
             if "```json" in content:
@@ -734,6 +904,12 @@ to the requested writing style, but never alter, omit, or invent factual market 
             candidate = str(styled.get("detail") or styled.get("notes") or "")
             fallback = str(core.get("detail") or "")
             if not candidate:
+                return fallback
+            unsafe_claims = (
+                "invest everything", "all in", "guaranteed return",
+                "risk free", "cannot lose", "certain profit",
+            )
+            if any(claim in candidate.lower() for claim in unsafe_claims):
                 return fallback
             # Reject model prose that introduces a numeric claim absent from the
             # source-derived core. This catches invented thresholds/position sizes
@@ -768,7 +944,10 @@ to the requested writing style, but never alter, omit, or invent factual market 
         # preserving it is what makes Operator, Investor, Builder, and Researcher
         # reports observably different.
         styled_report["persona_recommendation"] = styled_report.get("recommendation")
-        styled_report["recommendation"] = analysis_core.get("recommendation")
+        styled_report["recommendation"] = safe_styled_detail(
+            {"detail": styled_report.get("recommendation")},
+            {"detail": analysis_core.get("recommendation")},
+        )
         styled_report["health_indicators"] = (
             styled_report.get("health_indicators")
             or analysis_core.get("health_indicators")
@@ -819,6 +998,108 @@ to the requested writing style, but never alter, omit, or invent factual market 
             },
         }
         return styled_report
+
+    def _apply_writing_style(self, report: dict, intent: dict) -> dict:
+        """Make the requested tone visibly different without changing any fact or score."""
+        profile = intent.get("writing_profile") or {}
+        tone = profile.get("tone", "analytical")
+        depth = profile.get("depth", "standard")
+        length = profile.get("length", "standard")
+        clarity = profile.get("clarity", "professional")
+        compact = depth == "concise" or length == "compact"
+
+        plain_replacements = {
+            "directional attention signal": "sign of attention",
+            "community telemetry": "community data",
+            "telemetry": "data",
+            "audience baseline": "audience starting point",
+            "baseline": "starting point",
+            "repeatable participation loop": "repeatable community activity",
+            "qualified contributors": "people who actively create or help",
+            "resource-allocation decision": "clear decision on where to spend time",
+            "content conversion": "people taking the next action",
+        }
+
+        def styled_text(value: object, sentences: int = 2, words: int = 55) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if clarity == "plain" or tone == "friendly":
+                for source, target in plain_replacements.items():
+                    text = re.sub(re.escape(source), target, text, flags=re.IGNORECASE)
+            if compact and text:
+                demo_marker = "synthetic demo sample (not live):"
+                marker_index = text.lower().find(demo_marker)
+                if marker_index >= 0:
+                    end_candidates = [
+                        index for index in (
+                            text.find(") to ", marker_index),
+                            text.find(". The ", marker_index),
+                            text.find(". Use ", marker_index),
+                        ) if index >= 0
+                    ]
+                    if end_candidates:
+                        end_index = min(end_candidates)
+                        replacement = "synthetic demo signals"
+                        text = text[:marker_index] + replacement + text[end_index:]
+                chunks = re.split(r"(?<=[.!?])\s+", text)
+                text = " ".join(chunks[:sentences]).strip()
+                tokens = text.split()
+                if len(tokens) > words:
+                    text = " ".join(tokens[:words]).rstrip(" ,;:") + "."
+            return text
+
+        if compact or clarity == "plain" or tone == "friendly":
+            report["executive_conclusion"] = styled_text(
+                report.get("executive_conclusion"), sentences=2, words=52,
+            )
+            report["recommendation"] = styled_text(
+                report.get("recommendation"), sentences=2, words=48,
+            )
+            report["analysis_summary"] = styled_text(
+                report.get("analysis_summary"), sentences=2, words=45,
+            )
+            for dimension in report.get("dimensions") or []:
+                dimension["detail"] = styled_text(
+                    dimension.get("detail"), sentences=2, words=55,
+                )
+            for section in report.get("report_sections") or []:
+                section["content"] = styled_text(
+                    section.get("content"), sentences=2, words=46,
+                )
+            for inference in report.get("key_inferences") or []:
+                inference["inference"] = styled_text(
+                    inference.get("inference"), sentences=1, words=24,
+                )
+                inference["evidence"] = styled_text(
+                    inference.get("evidence"), sentences=1, words=34,
+                )
+            for action in report.get("action_plan") or []:
+                action["actions"] = [
+                    styled_text(item, sentences=1, words=24)
+                    for item in (action.get("actions") or [])[:1 if compact else 3]
+                ]
+                action["kpi"] = styled_text(
+                    action.get("kpi"), sentences=1, words=20,
+                )
+                action["dependency"] = styled_text(
+                    action.get("dependency"), sentences=1, words=24,
+                )
+
+        report["style_applied"] = {
+            "requested": bool(str(intent.get("style_instruction") or "").strip()),
+            "label": (
+                "Concise, friendly, and easy to understand"
+                if compact and (tone == "friendly" or clarity == "plain")
+                else "Concise and direct" if compact
+                else "Academic and methodology-led" if depth == "academic"
+                else "Detailed and professional" if depth == "detailed"
+                else "Standard professional analysis"
+            ),
+            "tone": tone,
+            "depth": depth,
+            "length": length,
+            "clarity": clarity,
+        }
+        return report
 
     def _enrich_report_content(self, report: dict, raw_data: dict, intent: dict) -> dict:
         """Persist style interpretation, immutable facts, and reusable NFT keywords."""
@@ -1120,11 +1401,10 @@ to the requested writing style, but never alter, omit, or invent factual market 
                     )
                 )
         if social.get("collection_error"):
-            safe_error = str(social.get("collection_error"))[:240]
             parts.append(
-                "- Collection attempt failed after identity verification. Treat this as "
-                "connected-but-unavailable provider data, not as a disconnected account. "
-                f"Provider status: {safe_error}"
+                "- A connected provider could not return metrics for this asset. Treat it as "
+                "temporarily unavailable data, not as a disconnected account. Do not expose "
+                "provider billing, credential, permission, or server diagnostics in the user report."
             )
 
         return "\n".join(parts) if parts else "No data available"
@@ -1203,16 +1483,15 @@ to the requested writing style, but never alter, omit, or invent factual market 
             availability_parts = []
             if x_state == "connected_no_data":
                 availability_parts.append(
-                    "X identity is connected, but the current API plan or permissions "
-                    "did not return an asset-level metric snapshot"
+                    "X is connected, but community metrics for this asset are unavailable"
                 )
             if telegram_state == "group_not_bound":
                 availability_parts.append(
-                    "Telegram identity is connected, but no operated group/channel is bound"
+                    "Telegram is connected, but the community group/channel is not bound"
                 )
             elif telegram_state == "connected_no_data":
                 availability_parts.append(
-                    "Telegram is connected to a community, but its latest metric sync is unavailable"
+                    "Telegram is connected, but community metrics are unavailable"
                 )
             social_availability = (
                 "; ".join(availability_parts)
@@ -1221,8 +1500,8 @@ to the requested writing style, but never alter, omit, or invent factual market 
             social_availability += ". Missing metrics remain unknown rather than zero."
         else:
             social_availability = (
-                "X and Telegram identities are not connected for this wallet, and Reddit "
-                "analytics are not configured. Missing metrics remain unknown rather than zero."
+                "X and Telegram community data are not connected for this asset. "
+                "Missing metrics remain unknown rather than zero."
             )
         market_cap = (cg.get("market_data", {}).get("market_cap", {}).get("usd", 0) or 0) if cg else 0
 
@@ -1251,7 +1530,10 @@ to the requested writing style, but never alter, omit, or invent factual market 
         if x_active_authors is not None:
             social_evidence_parts.append(f"{x_active_authors:,.0f} active X authors")
         if x_engagements is not None:
-            social_evidence_parts.append(f"{x_engagements:,.0f} observed X engagements")
+            social_evidence_parts.append(
+                f"{x_engagements:,.0f} "
+                f"{'demo X engagements' if social_demo else 'observed X engagements'}"
+            )
         if telegram_members is not None:
             social_evidence_parts.append(
                 f"{telegram_members:,.0f} members across connected Telegram communities"
@@ -1295,6 +1577,12 @@ to the requested writing style, but never alter, omit, or invent factual market 
             ),
             "social_volume": (
                 (
+                    (
+                        f"The report includes {social_reach_evidence}. This fixture demonstrates "
+                        "how X and Telegram signals change the operating plan; it is not a live "
+                        "claim about community strength."
+                    )
+                    if social_demo else
                     f"The connected source reports {social_reach_evidence}. "
                     f"{'Community reach appears strong.' if social_score >= 7 else 'Community reach appears moderate.'}"
                 )
@@ -1543,21 +1831,14 @@ to the requested writing style, but never alter, omit, or invent factual market 
             data_gaps.append({
                 "source": "X community metrics",
                 "status": (
-                    "action_required"
-                    if x_collection_error else
                     "connected_no_data"
-                    if x_state == "connected_no_data"
+                    if x_state == "connected_no_data" or x_collection_error
                     else "not_connected"
                 ),
                 "impact": (
-                    str(x_collection_error.get("message"))
-                    if x_collection_error else
-                    "X identity is connected, but no asset-level metric snapshot was returned. "
-                    "Check the X API access tier and tweet.read permissions; audience size, "
-                    "engagement quality, and sentiment remain unverified."
-                    if x_state == "connected_no_data" else
-                    "Connect X to collect wallet-authorized asset-level conversation signals. "
-                    "Audience size, engagement quality, and sentiment remain unverified."
+                    "X is connected, but community metrics for this asset are temporarily unavailable."
+                    if x_state == "connected_no_data" or x_collection_error else
+                    "Connect X to include audience activity and conversation signals in this report."
                 ),
             })
         if telegram_state != "ready" and telegram_members is None:
@@ -1567,37 +1848,22 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 else "not_connected"
             )
             telegram_impact = (
-                "Telegram identity is connected. Bind the operated group or channel with the "
-                "generated /connect code before member metrics can be collected."
+                "Telegram is connected. Bind the community group or channel to include its activity."
                 if telegram_state == "group_not_bound" else
-                "Telegram identity and community are connected, but the latest member-count "
-                "sync is unavailable. Verify that the Bot remains in the community."
+                "Telegram is connected, but community metrics are temporarily unavailable."
                 if telegram_state == "connected_no_data" else
-                "Connect Telegram identity and bind an operated group or channel to collect "
-                "member metrics."
+                "Connect Telegram and bind the community group or channel to include its activity."
             )
             data_gaps.append({
                 "source": "Telegram community metrics",
                 "status": telegram_status,
                 "impact": telegram_impact,
             })
-        if reddit_subscribers is None:
-            data_gaps.append({
-                "source": "Reddit community metrics",
-                "status": "not_configured",
-                "impact": (
-                    "Reddit ingestion is not configured in this release; subscriber, post, "
-                    "comment, and sentiment signals are therefore unavailable."
-                ),
-            })
-        data_gaps.append({
-            "source": "Wallet-level holder distribution",
-            "status": "not_connected",
-            "impact": "Unique-holder growth and concentration require a chain explorer source.",
-        })
 
         persona_config = PERSONA_REPORT_CONFIG[self.current_persona]
         if self.current_persona == "operator":
+            playbook = operator_asset_playbook(token_info)
+            asset_label = str(token_info.get("symbol") or token_info.get("name") or "meme").upper()
             executive_conclusion = (
                 "Ops Verdict: treat this community as a validation sprint, not a scaled "
                 "campaign yet. Transaction activity offers a directional attention signal, "
@@ -1611,24 +1877,28 @@ to the requested writing style, but never alter, omit, or invent factual market 
             recommendation = (
                 (
                     f"Use the {'synthetic demo' if social_demo else 'verified'} baseline ({social_reach_evidence}) to run a focused seven-day "
-                    "community validation sprint. Build the content theme around the current conversation, "
-                    "then compare contributor conversion and engagement against this baseline before scaling."
+                    f"{asset_label} community validation sprint around {playbook['narrative']}. Start with "
+                    f"{playbook['activation']}, then compare active-creator conversion and repeat "
+                    "participation against this baseline before scaling."
                 )
                 if social_connected else
-                "Start with a seven-day community validation sprint. Complete any remaining "
-                "social metric setup, map the active conversation, publish one native meme prompt, run "
-                "a live interaction, and review contributor conversion before committing more "
-                "operating resources."
+                f"Start with a seven-day {asset_label} community validation sprint around {playbook['narrative']}. "
+                "Connect community data, map the active conversation, test one native creator prompt, "
+                "and review repeat participation before committing more operating resources."
             )
             report_sections = [
                 {
                     "title": "What Is Trending",
                     "content": (
                         (
-                            f"The connected social snapshot reports {social_reach_evidence}. "
-                            f"Alongside {total_txns_24h:,.0f} DEX transactions and "
-                            f"${total_volume_24h:,.0f} in 24h volume, this identifies a live attention "
-                            "window; review the matched posts before selecting a campaign narrative."
+                            f"The {'synthetic demo baseline' if social_demo else 'connected social snapshot'} reports "
+                            f"{social_reach_evidence}. The operating hypothesis for {asset_label} should focus on "
+                            f"{playbook['narrative']}. "
+                            + (
+                                "Use this only to demonstrate how social evidence changes the plan; it is not a live trend claim."
+                                if social_demo else
+                                "Review matched posts before selecting the final campaign narrative."
+                            )
                         )
                         if social_connected else
                         f"{total_txns_24h:,.0f} DEX transactions and ${total_volume_24h:,.0f} "
@@ -1657,21 +1927,20 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 {
                     "title": "Operating Opportunity",
                     "content": (
-                        "Turn current attention into a simple loop: discover the strongest native "
-                        "narrative, invite low-friction meme participation, spotlight contributors, "
-                        "then convert the best response into a live community event."
+                        f"Test {playbook['activation']}. Spotlight the best contributors, then turn "
+                        f"the strongest response into {playbook['event']}. Guardrail: {playbook['guardrail']}."
                     ),
                     "status": "inference",
                 },
             ]
             day_themes = [
-                ("Day 1", "Join and listen", ["Join the primary X conversation; map 20 relevant accounts and 5 recurring topics."], "20 accounts mapped; 5 themes tagged"),
-                ("Day 2", "Content direction", ["Draft three narrative pillars and publish one native conversation prompt."], "3 pillars approved; baseline engagement recorded"),
-                ("Day 3", "Contributor activation", ["Invite 10 visible participants to a lightweight meme remix challenge."], "10 invites; at least 3 qualified submissions"),
-                ("Day 4", "Social proof", ["Feature the strongest community contribution and credit its creator."], "1 feature; contributor response rate tracked"),
-                ("Day 5", "Live interaction", ["Host an X Space, AMA, or live thread around the highest-response theme."], "1 event; attendance and questions recorded"),
-                ("Day 6", "Retention loop", ["Follow up with participants and invite them into the next content cycle."], "30% participant return or reply rate"),
-                ("Day 7", "Review and decide", ["Compare reach, engagement, contributors, and retention; choose scale, iterate, or pause."], "One documented resource-allocation decision"),
+                ("Day 1", f"Map {asset_label} culture", [f"Review the primary X and Telegram conversations; tag 20 accounts and 5 themes related to {playbook['narrative']}."], "20 accounts mapped; 5 asset-specific themes tagged"),
+                ("Day 2", "Choose the narrative", [f"Draft three {asset_label} content angles from the mapped themes and publish one low-friction question."], "3 angles approved; response baseline recorded"),
+                ("Day 3", "Activate creators", [f"Invite 10 visible contributors to {playbook['activation']}."], "10 invites; at least 3 qualified submissions"),
+                ("Day 4", "Build social proof", [f"Feature the strongest {asset_label} contribution, explain why it fits the community, and credit the creator."], "1 feature; creator and community response tracked"),
+                ("Day 5", "Run the signature event", [f"Host {playbook['event']} around the highest-response theme."], "1 event; attendance, questions, and contributors recorded"),
+                ("Day 6", "Create the return loop", [f"Invite every participant into the next {asset_label} content cycle and ask for one improvement."], "30% participant return or reply rate"),
+                ("Day 7", "Decide what to scale", [f"Compare reach, engagement, active creators, and return rate; apply this guardrail: {playbook['guardrail']}."], "One written scale, iterate, or pause decision"),
             ]
             action_plan = [
                 {
@@ -1686,13 +1955,13 @@ to the requested writing style, but never alter, omit, or invent factual market 
             ]
             key_inferences = [
                 {
-                    "inference": "There is observable attention, but community quality remains unverified.",
+                    "inference": f"{asset_label} has an attention signal, but community quality still needs validation.",
                     "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'synthetic demo only' if social_demo else 'verified' if social_connected else 'identity connected but awaiting metrics' if social_binding_connected else 'not connected'}.",
                     "confidence": "medium" if social_connected else "low",
                 },
                 {
-                    "inference": "A small validation sprint is more appropriate than a large campaign.",
-                    "evidence": "The current source set cannot measure active contributors, retention, or content conversion.",
+                    "inference": f"A focused {asset_label} activation is more useful than a generic meme campaign.",
+                    "evidence": f"The plan tests {playbook['narrative']} and measures active contributors and repeat participation.",
                     "confidence": "medium",
                 },
             ]

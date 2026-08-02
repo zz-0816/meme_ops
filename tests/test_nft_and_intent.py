@@ -95,6 +95,13 @@ class NFTAndIntentTests(unittest.TestCase):
         self.assertEqual(academic["depth"], "academic")
         self.assertNotEqual(friendly, academic)
 
+    def test_chinese_plain_concise_keywords_are_recognized(self):
+        profile = infer_writing_profile("简洁、清晰、容易理解，少用复杂术语")
+        self.assertEqual(profile["tone"], "friendly")
+        self.assertEqual(profile["depth"], "concise")
+        self.assertEqual(profile["length"], "compact")
+        self.assertEqual(profile["clarity"], "plain")
+
     def test_solana_contract_address_is_detected(self):
         self.assertTrue(is_contract_address("6Cd12aUdg5UyWg4L7SRsgL9UeE4azpeSbugkDiHJSxwH"))
 
