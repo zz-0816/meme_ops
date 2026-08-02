@@ -73,6 +73,14 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE social_metric_snapshots ADD COLUMN owner_address TEXT"
             )
+        social_asset_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(social_assets)").fetchall()
+        }
+        if social_asset_columns and "source_discovery_at" not in social_asset_columns:
+            conn.execute(
+                "ALTER TABLE social_assets ADD COLUMN source_discovery_at TIMESTAMP"
+            )
         social_rag_columns = {
             row["name"]
             for row in conn.execute(

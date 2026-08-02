@@ -392,6 +392,25 @@ class StaticProductRequirementsTests(unittest.TestCase):
         self.assertIn("wallet-oauth-search", social)
         self.assertIn("telegram_activity_events", schema + social)
 
+    def test_social_cache_first_and_mtproto_configuration_exist(self):
+        social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
+        mtproto = (ROOT / "backend" / "telegram_mtproto.py").read_text(encoding="utf-8")
+        env = (ROOT / ".env.example").read_text(encoding="utf-8")
+        requirements = (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
+        for marker in (
+            "social_cache_state", "served_from_cache", "refresh_triggered",
+            "SOCIAL_X_CACHE_TTL_SECONDS", "SOCIAL_TELEGRAM_CACHE_TTL_SECONDS",
+            "X_RECENT_SEARCH_MAX_RESULTS",
+        ):
+            self.assertIn(marker, social + env)
+        for marker in (
+            "TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_MTPROTO_SESSION",
+            "TELEGRAM_MTPROTO_ALLOWED_CHATS",
+            "public-aggregate-no-raw-message-storage",
+        ):
+            self.assertIn(marker, mtproto + env)
+        self.assertIn("Telethon", requirements)
+
 
 if __name__ == "__main__":
     unittest.main()

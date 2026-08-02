@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS social_assets (
     priority_tier            INTEGER DEFAULT 3,
     official_x               TEXT,
     telegram_chat            TEXT,
+    source_discovery_at      TIMESTAMP,
     metadata_json            TEXT DEFAULT '{}',
     last_market_sync_at      TIMESTAMP,
     updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP

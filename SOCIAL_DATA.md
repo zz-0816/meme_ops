@@ -2,13 +2,19 @@
 
 ## What is implemented
 
-`meme_ops` has two complementary paths:
+`meme_ops` resolves each provider with two complementary paths:
 
-1. A shared ranked universe of at least 100 meme assets. A scheduled collector
-   refreshes market priority and collects X signals through the official X API.
-2. Wallet-bound fallback connections. A user connects X with OAuth 2.0 PKCE
-   and Telegram with Telegram Login. Assets outside the shared universe can
-   then be collected on demand with that wallet's authorization.
+1. Cache first: use a fresh stored snapshot immediately for analysis.
+2. Refresh and write back: when a provider snapshot is missing or stale, the
+   scheduled collector or the user's analysis request refreshes that provider,
+   saves a new snapshot, and updates Social RAG. Stale data is served while a
+   background refresh runs; a completely missing snapshot waits only for the
+   configured inline timeout.
+
+The shared ranked universe contains at least 100 meme assets. X uses the
+official X API. Telegram can use either an explicitly bound Bot community or
+the optional official MTProto Client API collector for registered public
+community handles.
 
 Raw numeric snapshots are stored in SQLite first. Short attributable hourly
 summaries are stored in `social_rag_documents` and supplied to the report
@@ -60,6 +66,8 @@ For shared Top-100 collection, also configure an app-level read token:
 
 ```env
 X_BEARER_TOKEN=
+X_RECENT_SEARCH_MAX_RESULTS=10
+SOCIAL_X_CACHE_TTL_SECONDS=900
 ```
 
 Without `X_BEARER_TOKEN`, shared asset ranking still updates, while a connected
@@ -97,6 +105,41 @@ Add the bot to a group/channel and send:
 Only the Telegram user connected to the current wallet can consume that code,
 and the Bot API must confirm that user is a group/channel administrator.
 
+### Optional public-community MTProto collector
+
+Register an app at `https://my.telegram.org`, use a dedicated collector
+account, and configure:
+
+```env
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
+TELEGRAM_MTPROTO_SESSION=
+TELEGRAM_MTPROTO_MAX_MESSAGES=200
+TELEGRAM_MTPROTO_ALLOWED_CHATS=authorized_channel_one,authorized_group_two
+SOCIAL_TELEGRAM_CACHE_TTL_SECONDS=1800
+```
+
+Generate the StringSession once on a trusted local machine:
+
+```text
+python scripts/create_telegram_session.py
+```
+
+Paste it directly into a sealed Railway variable. Never place it in Git,
+screenshots, chat messages, logs, or a committed `.env`. The collector only
+uses handles registered in `social_assets.telegram_chat` that also appear in
+`TELEGRAM_MTPROTO_ALLOWED_CHATS`. Add a handle only after its administrators
+have explicitly authorized this specific, revocable analytics use. The app
+stores aggregate metrics and top terms and does not persist raw messages.
+CoinGecko community links fill a bounded number of missing source handles per
+scheduler run, but discovery alone never authorizes MTProto collection.
+
+Telegram's current Content Licensing terms prohibit broad Telegram data
+scraping/aggregation for AI products without the required specific consent.
+Therefore this project intentionally does not auto-scrape arbitrary Top-100
+communities. For broader coverage, use a provider that contractually licenses
+the data for this use case.
+
 ## Scheduler modes
 
 ### Local or one Railway web replica
@@ -108,6 +151,7 @@ SOCIAL_SCHEDULER_ENABLED=true
 SOCIAL_SCHEDULER_INTERVAL_SECONDS=900
 SOCIAL_ASSET_UNIVERSE_SIZE=100
 SOCIAL_COLLECTOR_CONCURRENCY=4
+SOCIAL_SOURCE_DISCOVERY_BATCH=5
 ```
 
 The default priority is:

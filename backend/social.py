@@ -26,6 +26,11 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from database import get_connection
+from telegram_mtproto import (
+    collect_public_telegram_asset,
+    is_authorized_telegram_handle,
+    mtproto_provider_status,
+)
 
 
 X_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize"
@@ -41,6 +46,7 @@ SOCIAL_INLINE_TIMEOUT_SECONDS = max(
 _TELEGRAM_BOT_VALIDATION_CACHE: dict[str, Any] = {}
 _SOCIAL_DIAGNOSTICS_CACHE: dict[str, tuple[float, dict]] = {}
 _BACKGROUND_COLLECTION_TASKS: set[asyncio.Task] = set()
+_BACKGROUND_REFRESH_TASKS: dict[tuple[str, str, str], asyncio.Task] = {}
 
 
 class SocialConfigurationError(RuntimeError):
@@ -139,6 +145,7 @@ def social_provider_status() -> dict:
             "webhook_configured": telegram_webhook_configured,
             "mode": "login-widget-and-bot",
             "auto_webhook": os.getenv("TELEGRAM_AUTO_SET_WEBHOOK", "false").lower() == "true",
+            "mtproto": mtproto_provider_status(),
         },
         "scheduler": {
             "enabled": os.getenv("SOCIAL_SCHEDULER_ENABLED", "false").lower() == "true",
@@ -871,12 +878,105 @@ def list_social_assets(limit: int = 100) -> list[dict]:
         conn.close()
 
 
+def update_social_asset_sources(
+    asset_key: str,
+    official_x: str | None = None,
+    telegram_chat: str | None = None,
+) -> None:
+    """Attach reviewed/discovered public handles without replacing known ones."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE social_assets
+               SET official_x = COALESCE(official_x, ?),
+                   telegram_chat = COALESCE(telegram_chat, ?),
+                   source_discovery_at = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE asset_key = ?""",
+            (official_x, telegram_chat, _iso(), asset_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _cache_ttl_seconds(provider: str) -> int:
+    env_name = (
+        "SOCIAL_X_CACHE_TTL_SECONDS"
+        if provider == "x" else "SOCIAL_TELEGRAM_CACHE_TTL_SECONDS"
+    )
+    default = "900" if provider == "x" else "1800"
+    return max(60, int(os.getenv(env_name, default)))
+
+
+def _as_utc_datetime(value: str | datetime | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def social_cache_state(
+    asset_key: str,
+    provider: str,
+    owner_address: str | None = None,
+    max_age_seconds: int | None = None,
+    fallback_asset_key: str | None = None,
+) -> dict:
+    """Return a provider-specific cache decision without exposing private data."""
+    owner = owner_address.lower() if owner_address else None
+    asset_keys = [asset_key]
+    if fallback_asset_key and fallback_asset_key != asset_key:
+        asset_keys.append(fallback_asset_key)
+    placeholders = ",".join("?" for _ in asset_keys)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            f"""SELECT MAX(collected_at) AS collected_at
+               FROM social_metric_snapshots
+               WHERE asset_key IN ({placeholders}) AND provider = ?
+                 AND (owner_address IS NULL OR owner_address = ?)""",
+            (*asset_keys, provider, owner),
+        ).fetchone()
+    finally:
+        conn.close()
+    collected = _as_utc_datetime(row["collected_at"] if row else None)
+    if not collected:
+        return {
+            "state": "missing", "fresh": False, "stale": False,
+            "age_seconds": None, "collected_at": None,
+        }
+    age = max(0, int((_utcnow() - collected).total_seconds()))
+    ttl = max_age_seconds or _cache_ttl_seconds(provider)
+    fresh = age <= ttl
+    return {
+        "state": "fresh" if fresh else "stale",
+        "fresh": fresh,
+        "stale": not fresh,
+        "age_seconds": age,
+        "collected_at": collected.isoformat(),
+        "ttl_seconds": ttl,
+    }
+
+
 def latest_social_context(
-    asset_key: str, limit: int = 8, owner_address: str | None = None,
+    asset_key: str,
+    limit: int = 8,
+    owner_address: str | None = None,
+    fallback_asset_key: str | None = None,
 ) -> dict:
     conn = get_connection()
     try:
         owner = owner_address.lower() if owner_address else None
+        asset_keys = [asset_key]
+        if fallback_asset_key and fallback_asset_key != asset_key:
+            asset_keys.append(fallback_asset_key)
+        placeholders = ",".join("?" for _ in asset_keys)
         connections: dict[str, dict] = {}
         telegram_communities: list[dict] = []
         if owner:
@@ -902,19 +1002,19 @@ def latest_social_context(
             ]
         metrics = [
             dict(row) for row in conn.execute(
-                """SELECT m.* FROM social_metric_snapshots m
+                f"""SELECT m.* FROM social_metric_snapshots m
                    JOIN (
                      SELECT provider, owner_address, MAX(collected_at) collected_at
-                     FROM social_metric_snapshots WHERE asset_key = ?
+                     FROM social_metric_snapshots WHERE asset_key IN ({placeholders})
                        AND (owner_address IS NULL OR owner_address = ?)
                      GROUP BY provider, owner_address
                    ) latest
                    ON latest.provider = m.provider
                   AND COALESCE(latest.owner_address, '') = COALESCE(m.owner_address, '')
                   AND latest.collected_at = m.collected_at
-                   WHERE m.asset_key = ?
+                   WHERE m.asset_key IN ({placeholders})
                    ORDER BY m.confidence DESC""",
-                (asset_key, owner, asset_key),
+                (*asset_keys, owner, *asset_keys),
             ).fetchall()
         ]
         if owner:
@@ -930,13 +1030,13 @@ def latest_social_context(
             metrics = list(preferred.values())
         documents = [
             dict(row) for row in conn.execute(
-                """SELECT title, content, platform, document_type, keywords_json,
+                f"""SELECT title, content, platform, document_type, keywords_json,
                           confidence, source_mode, collected_at
-                   FROM social_rag_documents WHERE asset_key = ?
+                   FROM social_rag_documents WHERE asset_key IN ({placeholders})
                      AND (owner_address IS NULL OR owner_address = ?)
                      AND (expires_at IS NULL OR expires_at >= ?)
                    ORDER BY collected_at DESC LIMIT ?""",
-                (asset_key, owner, _iso(), max(1, min(limit, 20))),
+                (*asset_keys, owner, _iso(), max(1, min(limit, 20))),
             ).fetchall()
         ]
         for item in metrics:
@@ -978,10 +1078,21 @@ def latest_social_context(
                 "status": "not_configured",
             },
         }
+        for provider in ("x", "telegram"):
+            provider_states[provider]["cache"] = social_cache_state(
+                asset_key, provider, owner_address=owner,
+                fallback_asset_key=fallback_asset_key,
+            )
         return {
             "asset_key": asset_key,
+            "fallback_asset_key": fallback_asset_key,
             "connected": bool(metrics),
             "binding_connected": x_identity or telegram_identity,
+            "cache_hit": bool(metrics),
+            "stale": any(
+                state.get("cache", {}).get("stale")
+                for state in provider_states.values()
+            ),
             "providers": provider_states,
             "metrics": metrics,
             "rag_documents": documents,
@@ -1128,6 +1239,12 @@ def _x_asset_query(asset: dict) -> str:
         terms.append(f"${symbol}")
     if name and name.lower() != symbol.lower():
         terms.append(f'"{name}"')
+    official_x = "".join(
+        char for char in str(asset.get("official_x") or "")
+        if char.isalnum() or char == "_"
+    )[:30]
+    if official_x:
+        terms.append(f"@{official_x}")
     if not terms:
         terms.append(f'"{str(asset.get("asset_key") or "meme")[:80]}"')
     return f"({' OR '.join(terms)}) -is:retweet"
@@ -1203,27 +1320,29 @@ class SocialCollector:
     def __init__(self) -> None:
         self.universe_size = max(100, int(os.getenv("SOCIAL_ASSET_UNIVERSE_SIZE", "100")))
 
-    def _is_due(self, asset: dict) -> bool:
-        if not os.getenv("X_BEARER_TOKEN", "").strip():
-            return True
+    def _providers_due(self, asset: dict) -> set[str]:
+        due: set[str] = set()
         tier = int(asset.get("priority_tier") or 3)
-        minutes = 15 if tier == 1 else 60 if tier == 2 else 360
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                """SELECT MAX(collected_at) AS collected_at
-                   FROM social_metric_snapshots
-                   WHERE asset_key = ? AND provider = 'x' AND owner_address IS NULL""",
-                (asset["asset_key"],),
-            ).fetchone()
-        finally:
-            conn.close()
-        if not row or not row["collected_at"]:
-            return True
-        try:
-            return datetime.fromisoformat(str(row["collected_at"])) <= _utcnow() - timedelta(minutes=minutes)
-        except ValueError:
-            return True
+        x_age = (15 if tier == 1 else 60 if tier == 2 else 360) * 60
+        if os.getenv("X_BEARER_TOKEN", "").strip() and not social_cache_state(
+            asset["asset_key"], "x", max_age_seconds=x_age,
+        )["fresh"]:
+            due.add("x")
+        mtproto = mtproto_provider_status()
+        if (
+            mtproto["configured"]
+            and asset.get("telegram_chat")
+            and is_authorized_telegram_handle(asset.get("telegram_chat"))
+            and not social_cache_state(
+                asset["asset_key"], "telegram",
+                max_age_seconds=_cache_ttl_seconds("telegram"),
+            )["fresh"]
+        ):
+            due.add("telegram")
+        return due
+
+    def _is_due(self, asset: dict) -> bool:
+        return bool(self._providers_due(asset))
 
     async def refresh_asset_universe(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=25) as client:
@@ -1241,28 +1360,68 @@ class SocialCollector:
             )
             response.raise_for_status()
             coins = response.json()
-        for rank, coin in enumerate(coins, 1):
-            upsert_social_asset(
-                {
-                    "coin_id": coin.get("id"),
-                    "name": coin.get("name"),
-                    "symbol": coin.get("symbol"),
-                    "image_url": coin.get("image"),
-                    "market_cap": coin.get("market_cap"),
-                    "volume_24h": coin.get("total_volume"),
-                    "change_24h": coin.get("price_change_percentage_24h"),
-                    "chain": "unknown",
-                    "metadata": {"rank": rank},
-                },
-                rank,
+            for rank, coin in enumerate(coins, 1):
+                upsert_social_asset(
+                    {
+                        "coin_id": coin.get("id"),
+                        "name": coin.get("name"),
+                        "symbol": coin.get("symbol"),
+                        "image_url": coin.get("image"),
+                        "market_cap": coin.get("market_cap"),
+                        "volume_24h": coin.get("total_volume"),
+                        "change_24h": coin.get("price_change_percentage_24h"),
+                        "chain": "unknown",
+                        "metadata": {"rank": rank},
+                    },
+                    rank,
+                )
+            # Fill a bounded number of missing public-community handles per run.
+            # This avoids a 100-request burst while eventually building the
+            # shared source registry used by both scheduled and on-demand paths.
+            discovery_batch = max(
+                0, min(int(os.getenv("SOCIAL_SOURCE_DISCOVERY_BATCH", "5")), 20)
             )
+            discovery_cutoff = _utcnow() - timedelta(days=7)
+            missing = []
+            for asset in list_social_assets(self.universe_size):
+                last_discovery = _as_utc_datetime(asset.get("source_discovery_at"))
+                if (
+                    asset.get("coin_id")
+                    and (not asset.get("official_x") or not asset.get("telegram_chat"))
+                    and (not last_discovery or last_discovery <= discovery_cutoff)
+                ):
+                    missing.append(asset)
+                if len(missing) >= discovery_batch:
+                    break
+            for asset in missing:
+                try:
+                    details_response = await client.get(
+                        f"https://api.coingecko.com/api/v3/coins/{asset['coin_id']}",
+                        params={
+                            "localization": "false", "tickers": "false",
+                            "market_data": "false", "community_data": "false",
+                            "developer_data": "false", "sparkline": "false",
+                        },
+                    )
+                    if details_response.status_code != 200:
+                        continue
+                    links = (details_response.json() or {}).get("links") or {}
+                    update_social_asset_sources(
+                        asset["asset_key"],
+                        official_x=str(links.get("twitter_screen_name") or "").lstrip("@") or None,
+                        telegram_chat=str(links.get("telegram_channel_identifier") or "").lstrip("@") or None,
+                    )
+                except Exception:
+                    continue
         return list_social_assets(self.universe_size)
 
     async def collect_asset(
         self,
         asset: dict,
         owner_address: str | None = None,
+        providers: set[str] | None = None,
     ) -> dict:
+        requested = providers or {"x", "telegram"}
         shared_token = os.getenv("X_BEARER_TOKEN", "").strip()
         wallet_token = (
             await _wallet_x_access_token(owner_address)
@@ -1271,7 +1430,7 @@ class SocialCollector:
         results: dict[str, Any] = {
             "asset_key": asset["asset_key"], "providers": {}, "errors": {},
         }
-        if shared_token or wallet_token:
+        if "x" in requested and (shared_token or wallet_token):
             query = _x_asset_query(asset)
             start_time = (_utcnow() - timedelta(hours=24)).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
@@ -1315,7 +1474,12 @@ class SocialCollector:
                         params={
                             "query": query,
                             "start_time": start_time,
-                            "max_results": 100,
+                            "max_results": max(
+                                10, min(
+                                    int(os.getenv("X_RECENT_SEARCH_MAX_RESULTS", "10")),
+                                    100,
+                                ),
+                            ),
                             "tweet.fields": "author_id,public_metrics,created_at",
                         },
                     )
@@ -1377,8 +1541,30 @@ class SocialCollector:
                 )
                 results["providers"]["x"] = metrics
 
-        if owner_address:
+        if "telegram" in requested and owner_address:
             await self._collect_telegram_for_owner(asset, owner_address, results)
+        if (
+            "telegram" in requested
+            and asset.get("telegram_chat")
+            and mtproto_provider_status()["configured"]
+            and is_authorized_telegram_handle(asset.get("telegram_chat"))
+        ):
+            try:
+                metrics = await collect_public_telegram_asset(asset)
+                if metrics:
+                    _save_snapshot(
+                        asset["asset_key"], "telegram", "shared-mtproto",
+                        metrics,
+                    )
+                    results["providers"]["telegram"] = metrics
+            except Exception as error:
+                results["errors"]["telegram_mtproto"] = {
+                    "code": "mtproto_collection_failed",
+                    "message": (
+                        "Telegram public-community refresh failed. Check the "
+                        f"registered handle and sealed MTProto session ({type(error).__name__})."
+                    ),
+                }
         return results
 
     async def _collect_telegram_for_owner(
@@ -1474,19 +1660,25 @@ class SocialCollector:
             assets = list_social_assets(limit or self.universe_size)
             errors.append(f"asset-universe: {error}")
         assets = assets[: max(1, min(limit or self.universe_size, self.universe_size))]
-        assets = [asset for asset in assets if self._is_due(asset)]
+        collection_plan = [
+            (asset, self._providers_due(asset)) for asset in assets
+        ]
+        collection_plan = [item for item in collection_plan if item[1]]
         semaphore = asyncio.Semaphore(max(1, int(os.getenv("SOCIAL_COLLECTOR_CONCURRENCY", "4"))))
 
-        async def collect_one(asset: dict) -> None:
+        async def collect_one(asset: dict, providers: set[str]) -> None:
             nonlocal success
             async with semaphore:
                 try:
-                    await self.collect_asset(asset)
+                    await self.collect_asset(asset, providers=providers)
                     success += 1
                 except Exception as error:
                     errors.append(f"{asset.get('asset_key')}: {error}")
 
-        await asyncio.gather(*(collect_one(asset) for asset in assets))
+        await asyncio.gather(*(
+            collect_one(asset, providers)
+            for asset, providers in collection_plan
+        ))
         conn = get_connection()
         try:
             conn.execute(
@@ -1494,7 +1686,7 @@ class SocialCollector:
                    error_count = ?, status = ?, details_json = ?, finished_at = ?
                    WHERE id = ?""",
                 (
-                    len(assets),
+                    len(collection_plan),
                     success,
                     len(errors),
                     "completed" if not errors else "partial",
@@ -1507,7 +1699,7 @@ class SocialCollector:
         finally:
             conn.close()
         return {
-            "asset_count": len(assets),
+            "asset_count": len(collection_plan),
             "success_count": success,
             "error_count": len(errors),
             "errors": errors[:30],
@@ -1536,6 +1728,28 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
         (item for item in list_social_assets(500) if item["asset_key"] == asset_key),
         None,
     )
+    registry_asset_key = (
+        f"coingecko:{str(coin.get('id')).lower()}" if coin.get("id") else None
+    )
+    registry_asset = next(
+        (
+            item for item in list_social_assets(500)
+            if registry_asset_key and item["asset_key"] == registry_asset_key
+        ),
+        None,
+    )
+    source_asset = existing or registry_asset or {}
+    coin_links = coin.get("links") or {}
+    discovered_x = (
+        str(coin_links.get("twitter_screen_name") or "").strip().lstrip("@")
+        or None
+    )
+    discovered_telegram = (
+        str(coin_links.get("telegram_channel_identifier") or "")
+        .strip()
+        .lstrip("@")
+        or None
+    )
     asset = {
         "asset_key": asset_key,
         "coin_id": coin.get("id"),
@@ -1547,56 +1761,116 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
         "market_cap": (((coin.get("market_data") or {}).get("market_cap") or {}).get("usd")),
         "volume_24h": (((coin.get("market_data") or {}).get("total_volume") or {}).get("usd")),
         "change_24h": (coin.get("market_data") or {}).get("price_change_percentage_24h"),
+        # A user search already fetched the full CoinGecko asset document.
+        # Reuse its reviewed community links immediately so non-Top-100 assets
+        # do not need to wait for the scheduled source-discovery batch.
+        "official_x": source_asset.get("official_x") or discovered_x,
+        "telegram_chat": source_asset.get("telegram_chat") or discovered_telegram,
+        "priority_tier": source_asset.get("priority_tier") or 3,
     }
     rank = 999
-    if existing:
-        metadata = _loads(existing.get("metadata_json"), {})
+    if source_asset:
+        metadata = _loads(source_asset.get("metadata_json"), {})
         rank = int(metadata.get("rank") or 999)
     upsert_social_asset(asset, rank=rank)
-    context = latest_social_context(asset_key, owner_address=owner_address)
-    if not context["connected"] and owner_address:
-        has_connection = bool(context.get("binding_connected"))
-        if has_connection:
+    context = latest_social_context(
+        asset_key, owner_address=owner_address,
+        fallback_asset_key=registry_asset_key,
+    )
+    provider_status = social_provider_status()
+    provider_states = context.get("providers") or {}
+    refresh_providers: set[str] = set()
+    if not (provider_states.get("x") or {}).get("cache", {}).get("fresh"):
+        if (
+            provider_status["x"]["shared_collector_configured"]
+            or (provider_states.get("x") or {}).get("identity_connected")
+        ):
+            refresh_providers.add("x")
+    telegram_state = provider_states.get("telegram") or {}
+    telegram_source_available = bool(
+        telegram_state.get("community_count")
+        or (
+            asset.get("telegram_chat")
+            and provider_status["telegram"]["mtproto"]["configured"]
+            and is_authorized_telegram_handle(asset.get("telegram_chat"))
+        )
+    )
+    if (
+        not telegram_state.get("cache", {}).get("fresh")
+        and telegram_source_available
+    ):
+        refresh_providers.add("telegram")
+
+    if refresh_providers:
+        refresh_has_missing_data = any(
+            (provider_states.get(provider) or {}).get("cache", {}).get("state")
+            == "missing"
+            for provider in refresh_providers
+        )
+        refresh_key = (
+            asset_key,
+            owner_address.lower() if owner_address else "shared",
+            ",".join(sorted(refresh_providers)),
+        )
+        collection_task = _BACKGROUND_REFRESH_TASKS.get(refresh_key)
+        created_refresh_task = False
+        if not collection_task or collection_task.done():
             collection_task = asyncio.create_task(
-                SocialCollector().collect_asset(asset, owner_address)
+                SocialCollector().collect_asset(
+                    asset, owner_address, providers=refresh_providers,
+                )
             )
+            _BACKGROUND_REFRESH_TASKS[refresh_key] = collection_task
             _BACKGROUND_COLLECTION_TASKS.add(collection_task)
+            created_refresh_task = True
 
-            def finish_collection(task: asyncio.Task) -> None:
-                _BACKGROUND_COLLECTION_TASKS.discard(task)
-                if not task.cancelled():
-                    try:
-                        task.exception()
-                    except Exception:
-                        pass
+        def finish_collection(task: asyncio.Task) -> None:
+            _BACKGROUND_COLLECTION_TASKS.discard(task)
+            if _BACKGROUND_REFRESH_TASKS.get(refresh_key) is task:
+                _BACKGROUND_REFRESH_TASKS.pop(refresh_key, None)
+            if not task.cancelled():
+                try:
+                    task.exception()
+                except Exception:
+                    pass
 
+        if created_refresh_task:
             collection_task.add_done_callback(finish_collection)
+        context["refresh_triggered"] = sorted(refresh_providers)
+        if not refresh_has_missing_data:
+            # Stale-while-revalidate: return the stored snapshot immediately
+            # and refresh it in the background so analysis remains responsive.
+            context["collection_pending"] = True
+            context["served_from_cache"] = True
+        else:
             try:
                 collection_result = await asyncio.wait_for(
                     asyncio.shield(collection_task),
                     timeout=SOCIAL_INLINE_TIMEOUT_SECONDS,
                 )
-                context = latest_social_context(asset_key, owner_address=owner_address)
+                context = latest_social_context(
+                    asset_key, owner_address=owner_address,
+                    fallback_asset_key=registry_asset_key,
+                )
+                context["refresh_triggered"] = sorted(refresh_providers)
                 if collection_result.get("errors"):
                     context["collection_errors"] = collection_result["errors"]
                     first_error = next(iter(collection_result["errors"].values()))
                     context["collection_error"] = first_error.get("message")
             except asyncio.TimeoutError:
-                # Keep collection running for the scheduler/RAG cache, but do
-                # not make the user wait through a slow social provider. The
-                # next report can consume the completed snapshot immediately.
                 context = latest_social_context(
                     asset_key, owner_address=owner_address,
+                    fallback_asset_key=registry_asset_key,
                 )
                 context["collection_pending"] = True
+                context["refresh_triggered"] = sorted(refresh_providers)
             except Exception as error:
-                # Preserve the verified identity-binding state. A provider plan,
-                # permission, or group setup failure is not the same as an
-                # unbound account and must be reported separately.
                 context = latest_social_context(
                     asset_key, owner_address=owner_address,
+                    fallback_asset_key=registry_asset_key,
                 )
                 context["collection_error"] = str(error)
+                context["refresh_triggered"] = sorted(refresh_providers)
     context["status"] = (
         "ready" if context["connected"]
         else "connected-no-data" if context.get("binding_connected")

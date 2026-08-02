@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import asyncio
+import copy
 import os
 import sys
 import tempfile
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import database
 import social
+import telegram_mtproto
 
 
 class SocialIntegrationTests(unittest.TestCase):
@@ -299,6 +301,200 @@ class SocialIntegrationTests(unittest.TestCase):
     def test_collector_universe_never_drops_below_one_hundred(self):
         with patch.dict(os.environ, {"SOCIAL_ASSET_UNIVERSE_SIZE": "10"}):
             self.assertEqual(social.SocialCollector().universe_size, 100)
+
+    def test_provider_cache_state_distinguishes_fresh_stale_and_missing(self):
+        asset_key = social.upsert_social_asset(
+            {"coin_id": "dogecoin", "name": "Dogecoin", "symbol": "DOGE"},
+            rank=1,
+        )
+        self.assertEqual(
+            social.social_cache_state(asset_key, "x")["state"], "missing",
+        )
+        social._save_snapshot(
+            asset_key, "x", "shared-api",
+            {"mentions_24h": 12, "confidence": 0.8},
+        )
+        self.assertEqual(
+            social.social_cache_state(
+                asset_key, "x", max_age_seconds=60,
+            )["state"],
+            "fresh",
+        )
+        conn = database.get_connection()
+        conn.execute(
+            "UPDATE social_metric_snapshots SET collected_at = ? WHERE asset_key = ?",
+            ("2020-01-01T00:00:00+00:00", asset_key),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(
+            social.social_cache_state(
+                asset_key, "x", max_age_seconds=60,
+            )["state"],
+            "stale",
+        )
+
+    def test_scheduler_refreshes_stale_providers_independently(self):
+        asset_key = social.upsert_social_asset(
+            {
+                "coin_id": "dogecoin", "name": "Dogecoin", "symbol": "DOGE",
+                "telegram_chat": "dogecoin",
+            },
+            rank=1,
+        )
+        social._save_snapshot(
+            asset_key, "x", "shared-api",
+            {"mentions_24h": 12, "confidence": 0.8},
+        )
+        asset = social.list_social_assets(1)[0]
+        with patch.dict(
+            os.environ,
+            {
+                "X_BEARER_TOKEN": "app-token",
+                "TELEGRAM_API_ID": "123",
+                "TELEGRAM_API_HASH": "hash",
+                "TELEGRAM_MTPROTO_SESSION": "session",
+                "TELEGRAM_MTPROTO_ALLOWED_CHATS": "dogecoin",
+            },
+            clear=False,
+        ):
+            due = social.SocialCollector()._providers_due(asset)
+        self.assertNotIn("x", due)
+        self.assertIn("telegram", due)
+
+    def test_mtproto_handle_normalization_and_secret_free_status(self):
+        self.assertEqual(
+            telegram_mtproto.normalize_telegram_handle(
+                "https://t.me/dogecoin?start=1"
+            ),
+            "dogecoin",
+        )
+        self.assertEqual(
+            telegram_mtproto.normalize_telegram_handle("Saved Messages"), "",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_API_ID": "123",
+                "TELEGRAM_API_HASH": "super-secret-hash",
+                "TELEGRAM_MTPROTO_SESSION": "super-secret-session",
+                "TELEGRAM_MTPROTO_ALLOWED_CHATS": "dogecoin",
+            },
+            clear=False,
+        ):
+            status = telegram_mtproto.mtproto_provider_status()
+            self.assertTrue(status["configured"])
+            self.assertEqual(status["authorized_chat_count"], 1)
+            self.assertNotIn("super-secret", str(status))
+            self.assertTrue(
+                telegram_mtproto.is_authorized_telegram_handle("@dogecoin")
+            )
+            self.assertFalse(
+                telegram_mtproto.is_authorized_telegram_handle("@unknown")
+            )
+
+    def test_empty_source_discovery_is_timestamped_to_avoid_request_loops(self):
+        asset_key = social.upsert_social_asset(
+            {"coin_id": "unknown-meme", "name": "Unknown", "symbol": "UNK"},
+            rank=100,
+        )
+        social.update_social_asset_sources(asset_key)
+        asset = next(
+            item for item in social.list_social_assets(100)
+            if item["asset_key"] == asset_key
+        )
+        self.assertIsNotNone(asset["source_discovery_at"])
+        self.assertIsNone(asset["official_x"])
+        self.assertIsNone(asset["telegram_chat"])
+
+    def test_parallel_cache_misses_share_one_provider_refresh(self):
+        asset_key = social.upsert_social_asset(
+            {"coin_id": "dogecoin", "name": "Dogecoin", "symbol": "DOGE"},
+            rank=1,
+        )
+        social._upsert_connection("0xaaa", "x", "1", "operator", "token")
+        raw = {
+            "search_query": "dogecoin",
+            "coingecko": {"id": "dogecoin", "name": "Dogecoin"},
+            "dexscreener": {"pairs": []},
+        }
+        calls = []
+
+        async def fake_collect(_collector, _asset, owner_address=None, providers=None):
+            calls.append((owner_address, providers))
+            await asyncio.sleep(0.02)
+            social._save_snapshot(
+                asset_key, "x", "wallet-oauth-search",
+                {"mentions_24h": 9, "confidence": 0.8},
+                owner_address=owner_address,
+            )
+            return {"providers": {"x": {}}, "errors": {}}
+
+        async def run_parallel():
+            return await asyncio.gather(
+                social.enrich_raw_data_with_social(copy.deepcopy(raw), "0xaaa"),
+                social.enrich_raw_data_with_social(copy.deepcopy(raw), "0xaaa"),
+            )
+
+        social._BACKGROUND_REFRESH_TASKS.clear()
+        with patch.object(social.SocialCollector, "collect_asset", new=fake_collect):
+            results = asyncio.run(run_parallel())
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(item["social"]["connected"] for item in results))
+
+    def test_chain_asset_can_reuse_same_coingecko_registry_without_symbol_merge(self):
+        registry_key = social.upsert_social_asset(
+            {"coin_id": "dogecoin", "name": "Dogecoin", "symbol": "DOGE"},
+            rank=1,
+        )
+        social._save_snapshot(
+            registry_key, "x", "shared-api",
+            {"mentions_24h": 77, "confidence": 0.8},
+        )
+        exact_key = social.upsert_social_asset(
+            {
+                "chain": "solana", "contract_address": "DOGE123",
+                "name": "Dogecoin", "symbol": "DOGE",
+            },
+            rank=999,
+        )
+        reused = social.latest_social_context(
+            exact_key, fallback_asset_key=registry_key,
+        )
+        unrelated_key = social.upsert_social_asset(
+            {
+                "chain": "base", "contract_address": "OTHER123",
+                "name": "Another Doge", "symbol": "DOGE",
+            },
+            rank=999,
+        )
+        unrelated = social.latest_social_context(unrelated_key)
+        self.assertTrue(reused["connected"])
+        self.assertEqual(reused["metrics"][0]["mentions_24h"], 77)
+        self.assertFalse(unrelated["connected"])
+
+    def test_user_search_persists_discovered_public_social_sources(self):
+        raw = {
+            "search_query": "new-meme",
+            "coingecko": {
+                "id": "new-meme",
+                "name": "New Meme",
+                "symbol": "NEW",
+                "links": {
+                    "twitter_screen_name": "new_meme_official",
+                    "telegram_channel_identifier": "new_meme_chat",
+                },
+            },
+            "dexscreener": {"pairs": []},
+        }
+        enriched = asyncio.run(social.enrich_raw_data_with_social(raw, None))
+        asset = next(
+            item for item in social.list_social_assets(500)
+            if item["asset_key"] == "coingecko:new-meme"
+        )
+        self.assertEqual(asset["official_x"], "new_meme_official")
+        self.assertEqual(asset["telegram_chat"], "new_meme_chat")
+        self.assertEqual(enriched["social"]["status"], "not-connected")
 
     def test_x_payment_error_is_actionable_and_secret_free(self):
         class FakeResponse:
