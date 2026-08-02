@@ -148,16 +148,30 @@ def social_provider_status() -> dict:
             "mtproto": mtproto_provider_status(),
         },
         "scheduler": {
-            "enabled": os.getenv("SOCIAL_SCHEDULER_ENABLED", "false").lower() == "true",
+            "enabled": (
+                os.getenv("SOCIAL_SCHEDULER_ENABLED", "false").lower() == "true"
+                and not demo_social_enabled()
+            ),
             "universe_size": max(100, int(os.getenv("SOCIAL_ASSET_UNIVERSE_SIZE", "100"))),
             "interval_seconds": max(300, int(os.getenv("SOCIAL_SCHEDULER_INTERVAL_SECONDS", "900"))),
         },
         "demo_social": {
-            "enabled": os.getenv("DEMO_SOCIAL_DATA_ENABLED", "false").lower() == "true",
+            "enabled": demo_social_enabled(),
             "limit": max(1, min(int(os.getenv("DEMO_SOCIAL_DATA_LIMIT", "10")), 100)),
             "mode": "synthetic-not-live",
         },
     }
+
+
+def demo_social_enabled() -> bool:
+    """Use explicit configuration, or default on for this Railway demo service."""
+    configured = os.getenv("DEMO_SOCIAL_DATA_ENABLED")
+    if configured is not None:
+        return configured.strip().lower() == "true"
+    return bool(
+        os.getenv("RAILWAY_ENVIRONMENT_ID")
+        or os.getenv("RAILWAY_PROJECT_ID")
+    )
 
 
 def _save_oauth_state(
@@ -1881,7 +1895,11 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
     provider_status = social_provider_status()
     provider_states = context.get("providers") or {}
     refresh_providers: set[str] = set()
-    if not (provider_states.get("x") or {}).get("cache", {}).get("fresh"):
+    demo_context_active = bool(context.get("demo_mode") and demo_social_enabled())
+    if (
+        not demo_context_active
+        and not (provider_states.get("x") or {}).get("cache", {}).get("fresh")
+    ):
         if (
             provider_status["x"]["shared_collector_configured"]
             or (provider_states.get("x") or {}).get("identity_connected")
@@ -1897,7 +1915,8 @@ async def enrich_raw_data_with_social(raw_data: dict, owner_address: str | None)
         )
     )
     if (
-        not telegram_state.get("cache", {}).get("fresh")
+        not demo_context_active
+        and not telegram_state.get("cache", {}).get("fresh")
         and telegram_source_available
     ):
         refresh_providers.add("telegram")
@@ -2005,6 +2024,8 @@ async def _scheduler_loop() -> None:
 
 def start_social_scheduler() -> asyncio.Task | None:
     global _scheduler_task
+    if demo_social_enabled():
+        return None
     if os.getenv("SOCIAL_SCHEDULER_ENABLED", "false").lower() != "true":
         return None
     if _scheduler_task and not _scheduler_task.done():

@@ -424,6 +424,8 @@ class StaticProductRequirementsTests(unittest.TestCase):
             self.assertIn(marker, social + env + script)
         self.assertIn("Synthetic Demo Data - Not Live", agent)
         self.assertIn("demo-notice", charts)
+        self.assertIn("RAILWAY_ENVIRONMENT_ID", social)
+        self.assertIn("demo_context_active", social)
 
 
 if __name__ == "__main__":

@@ -160,6 +160,12 @@ and never refreshes an existing demo row on restart. Reports display
 proxies. After the seed succeeds, set `DEMO_SOCIAL_DATA_ENABLED=false` and
 redeploy; the persisted database rows remain available for the demo.
 
+For the hosted Railway demo, this flag defaults to enabled only when it is not
+set at all. Local and other self-hosted environments remain disabled by
+default. Set `DEMO_SOCIAL_DATA_ENABLED=false` in Railway to turn the fixtures
+off explicitly. While demo mode is active, scheduled and on-demand provider
+refreshes are paused so the demo cannot consume X API credits.
+
 The equivalent trusted local/console command is:
 
 ```text

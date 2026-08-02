@@ -531,6 +531,21 @@ class SocialIntegrationTests(unittest.TestCase):
             telegram_metric["raw_summary"]["synthetic"], True,
         )
 
+    def test_railway_demo_default_can_be_explicitly_disabled(self):
+        previous = os.environ.pop("DEMO_SOCIAL_DATA_ENABLED", None)
+        try:
+            with patch.dict(
+                os.environ, {"RAILWAY_ENVIRONMENT_ID": "railway-demo"},
+                clear=False,
+            ):
+                self.assertTrue(social.demo_social_enabled())
+                os.environ["DEMO_SOCIAL_DATA_ENABLED"] = "false"
+                self.assertFalse(social.demo_social_enabled())
+        finally:
+            os.environ.pop("DEMO_SOCIAL_DATA_ENABLED", None)
+            if previous is not None:
+                os.environ["DEMO_SOCIAL_DATA_ENABLED"] = previous
+
     def test_x_payment_error_is_actionable_and_secret_free(self):
         class FakeResponse:
             status_code = 402
