@@ -411,6 +411,20 @@ class StaticProductRequirementsTests(unittest.TestCase):
             self.assertIn(marker, mtproto + env)
         self.assertIn("Telethon", requirements)
 
+    def test_synthetic_demo_social_data_is_explicit_and_opt_in(self):
+        social = (ROOT / "backend" / "social.py").read_text(encoding="utf-8")
+        agent = (ROOT / "backend" / "agent.py").read_text(encoding="utf-8")
+        charts = (ROOT / "backend" / "charts.py").read_text(encoding="utf-8")
+        env = (ROOT / ".env.example").read_text(encoding="utf-8")
+        script = (ROOT / "scripts" / "seed_demo_social.py").read_text(encoding="utf-8")
+        for marker in (
+            "DEMO_SOCIAL_DATA_ENABLED", "demo-synthetic-v1",
+            "seed_demo_social_snapshots", "synthetic-demo-not-live",
+        ):
+            self.assertIn(marker, social + env + script)
+        self.assertIn("Synthetic Demo Data - Not Live", agent)
+        self.assertIn("demo-notice", charts)
+
 
 if __name__ == "__main__":
     unittest.main()

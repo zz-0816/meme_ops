@@ -496,6 +496,41 @@ class SocialIntegrationTests(unittest.TestCase):
         self.assertEqual(asset["telegram_chat"], "new_meme_chat")
         self.assertEqual(enriched["social"]["status"], "not-connected")
 
+    def test_demo_seed_is_labelled_idempotent_and_never_replaces_real_data(self):
+        keys = []
+        for rank in range(1, 11):
+            keys.append(social.upsert_social_asset({
+                "coin_id": f"demo-{rank}",
+                "name": f"Demo {rank}",
+                "symbol": f"D{rank}",
+                "market_cap": 1_000_000 / rank,
+                "volume_24h": 100_000 / rank,
+            }, rank=rank))
+        social._save_snapshot(
+            keys[0], "x", "shared-api",
+            {"mentions_24h": 99, "confidence": 0.8},
+        )
+
+        first = social.seed_demo_social_snapshots(10)
+        second = social.seed_demo_social_snapshots(10)
+
+        self.assertEqual(first["snapshot_count"], 19)
+        self.assertEqual(first["skipped_real"], 1)
+        self.assertEqual(second["snapshot_count"], 0)
+        context = social.latest_social_context(keys[0])
+        self.assertTrue(context["demo_mode"])
+        x_metric = next(
+            item for item in context["metrics"] if item["provider"] == "x"
+        )
+        telegram_metric = next(
+            item for item in context["metrics"] if item["provider"] == "telegram"
+        )
+        self.assertEqual(x_metric["source_mode"], "shared-api")
+        self.assertEqual(telegram_metric["source_mode"], "demo-synthetic-v1")
+        self.assertEqual(
+            telegram_metric["raw_summary"]["synthetic"], True,
+        )
+
     def test_x_payment_error_is_actionable_and_secret_free(self):
         class FakeResponse:
             status_code = 402

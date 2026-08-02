@@ -52,6 +52,7 @@ from social import (
     latest_social_context, list_connections, list_social_assets,
     process_telegram_webhook, social_provider_status,
     social_connection_diagnostics,
+    seed_demo_social_snapshots,
     start_social_scheduler, stop_social_scheduler,
     validate_telegram_bot_configuration,
 )
@@ -96,6 +97,15 @@ _ANALYSIS_JOB_TTL_SECONDS = 60 * 60
 @app.on_event("startup")
 async def startup():
     init_db()
+    if os.getenv("DEMO_SOCIAL_DATA_ENABLED", "false").lower() == "true":
+        demo_result = seed_demo_social_snapshots(
+            int(os.getenv("DEMO_SOCIAL_DATA_LIMIT", "10"))
+        )
+        print(
+            "Synthetic demo social seed: "
+            f"assets={demo_result['asset_count']} "
+            f"snapshots={demo_result['snapshot_count']}"
+        )
     agent.reload_memory()
     start_social_scheduler()
     if os.getenv("TELEGRAM_AUTO_SET_WEBHOOK", "false").lower() == "true":

@@ -577,6 +577,9 @@ Exclusive report contract for {persona_config['name']}:
   a required Telegram group step (action_required), and an unsupported source
   (not_configured). Use neutral wording and do not infer follower or subscriber counts.
 - Distinguish verified facts, directional proxies, inferences, and unavailable data.
+- If any social source_mode starts with "demo-synthetic", it is fabricated UI
+  fixture data, not provider evidence. Label every use as "Synthetic demo",
+  assign proxy/low confidence, and never call it verified, live, observed, or real.
 
 Wallet-private persona RAG context (preferences only, never factual evidence):
 {rag_instructions}
@@ -897,6 +900,41 @@ to the requested writing style, but never alter, omit, or invent factual market 
         }
         report["report_keywords"] = keywords[:12]
         report["poster_facts"] = facts
+        social_context = raw_data.get("social") or {}
+        if social_context.get("demo_mode"):
+            report["social_data_mode"] = "synthetic-demo"
+            report["social_data_notice"] = (
+                "Synthetic Demo Data - Not Live. X and Telegram values in this "
+                "report are generated fixtures and must not be used for decisions."
+            )
+            gaps = report.setdefault("data_gaps", [])
+            if not any(item.get("source") == "Social data provenance" for item in gaps):
+                gaps.insert(0, {
+                    "source": "Social data provenance",
+                    "status": "synthetic_demo",
+                    "impact": report["social_data_notice"],
+                })
+            replacements = {
+                "verified baseline": "synthetic demo baseline",
+                "connected baseline": "synthetic demo baseline",
+                "connected social snapshot": "synthetic demo social snapshot",
+                "connected source": "synthetic demo source",
+            }
+            for field in ("executive_conclusion", "recommendation", "analysis_summary"):
+                value = str(report.get(field) or "")
+                for old, new in replacements.items():
+                    value = value.replace(old, new).replace(old.title(), new.title())
+                report[field] = value
+            for section in report.get("report_sections") or []:
+                content = str(section.get("content") or "")
+                for old, new in replacements.items():
+                    content = content.replace(old, new).replace(old.title(), new.title())
+                section["content"] = content
+                if any(
+                    term in content.lower()
+                    for term in ("social", "community", "audience", "telegram", " x ")
+                ):
+                    section["status"] = "proxy"
         narrative = report.get("poster_narrative") or {}
         token_name = str((report.get("token") or {}).get("name") or "Meme")
         report["poster_narrative"] = {
@@ -1022,6 +1060,12 @@ to the requested writing style, but never alter, omit, or invent factual market 
         social = raw_data.get("social") or {}
         provider_states = social.get("providers") or {}
         if social.get("connected"):
+            if social.get("demo_mode"):
+                parts.append(
+                    "\n### SYNTHETIC DEMO SOCIAL DATA - NOT LIVE\n"
+                    "- All X/Telegram figures below are generated fixtures for UI demos. "
+                    "They are not provider observations and must never be presented as verified facts."
+                )
             parts.append("\n### Connected social intelligence")
             for metric in social.get("metrics") or []:
                 provider = str(metric.get("provider") or "social").upper()
@@ -1129,6 +1173,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
         reddit_subscribers = reddit_raw if isinstance(reddit_raw, (int, float)) and reddit_raw > 0 else None
         social_context = raw_data.get("social") or {}
         social_metrics = social_context.get("metrics") or []
+        social_demo = bool(social_context.get("demo_mode"))
         def aggregate_social_metric(provider: str, key: str) -> int | None:
             values = [
                 int(item[key]) for item in social_metrics
@@ -1223,6 +1268,10 @@ to the requested writing style, but never alter, omit, or invent factual market 
             ", ".join(social_evidence_parts)
             if social_evidence_parts else "No connected social audience metric"
         )
+        if social_demo and social_evidence_parts:
+            social_reach_evidence = (
+                "synthetic demo sample (not live): " + social_reach_evidence
+            )
         trend_score = min(10, round(total_volume_24h / 1_000_000 * 2, 1)) if total_volume_24h > 0 else 0
 
         scores = {"liquidity": liq_score, "holder_count": holder_score, "holder_distribution": dist_score,
@@ -1473,6 +1522,15 @@ to the requested writing style, but never alter, omit, or invent factual market 
             recommendation = recs.get(risk, "Insufficient data")
 
         data_gaps = []
+        if social_demo:
+            data_gaps.append({
+                "source": "Social data provenance",
+                "status": "synthetic_demo",
+                "impact": (
+                    "X and Telegram values are generated fixtures for product demonstration, "
+                    "not provider observations or decision-grade evidence."
+                ),
+            })
         collection_errors = social_context.get("collection_errors") or {}
         x_collection_error = next(
             (
@@ -1552,7 +1610,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             )
             recommendation = (
                 (
-                    f"Use the verified baseline ({social_reach_evidence}) to run a focused seven-day "
+                    f"Use the {'synthetic demo' if social_demo else 'verified'} baseline ({social_reach_evidence}) to run a focused seven-day "
                     "community validation sprint. Build the content theme around the current conversation, "
                     "then compare contributor conversion and engagement against this baseline before scaling."
                 )
@@ -1592,6 +1650,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
                         "connected_no_data"
                         if social_binding_connected and not social_connected
                         else "not_connected" if not social_connected
+                        else "proxy" if social_demo
                         else "verified"
                     ),
                 },
@@ -1618,7 +1677,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
                 {
                     "day": day, "theme": theme, "actions": actions, "kpi": kpi,
                     "dependency": (
-                        f"Measure lift against the connected baseline: {social_reach_evidence}"
+                        f"Measure lift against the {'synthetic demo' if social_demo else 'connected'} baseline: {social_reach_evidence}"
                         if social_connected else
                         "Complete social metric collection for verified measurement"
                     ),
@@ -1628,7 +1687,7 @@ to the requested writing style, but never alter, omit, or invent factual market 
             key_inferences = [
                 {
                     "inference": "There is observable attention, but community quality remains unverified.",
-                    "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'verified' if social_connected else 'identity connected but awaiting metrics' if social_binding_connected else 'not connected'}.",
+                    "evidence": f"{total_txns_24h:,.0f} 24h transactions are a market-activity proxy; social telemetry is {'synthetic demo only' if social_demo else 'verified' if social_connected else 'identity connected but awaiting metrics' if social_binding_connected else 'not connected'}.",
                     "confidence": "medium" if social_connected else "low",
                 },
                 {

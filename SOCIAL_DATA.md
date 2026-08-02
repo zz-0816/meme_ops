@@ -142,6 +142,32 @@ the data for this use case.
 
 ## Scheduler modes
 
+## One-time synthetic demo snapshot
+
+For a product demo without X credits, the service can seed deterministic,
+clearly-labelled X and Telegram fixtures for the currently ranked Top 10:
+
+```env
+DEMO_SOCIAL_DATA_ENABLED=true
+DEMO_SOCIAL_DATA_LIMIT=10
+SOCIAL_SCHEDULER_ENABLED=false
+```
+
+Redeploy once. The startup hook inserts `demo-synthetic-v1` snapshots only
+when the asset/provider has no existing snapshot. It never replaces real data
+and never refreshes an existing demo row on restart. Reports display
+`Synthetic Demo Data - Not Live` and treat the values as low-confidence
+proxies. After the seed succeeds, set `DEMO_SOCIAL_DATA_ENABLED=false` and
+redeploy; the persisted database rows remain available for the demo.
+
+The equivalent trusted local/console command is:
+
+```text
+python scripts/seed_demo_social.py
+```
+
+Do not market, export, or describe these fixtures as X/Telegram observations.
+
 ### Local or one Railway web replica
 
 Run the collector inside the API process:

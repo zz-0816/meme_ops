@@ -152,6 +152,11 @@ def social_provider_status() -> dict:
             "universe_size": max(100, int(os.getenv("SOCIAL_ASSET_UNIVERSE_SIZE", "100"))),
             "interval_seconds": max(300, int(os.getenv("SOCIAL_SCHEDULER_INTERVAL_SECONDS", "900"))),
         },
+        "demo_social": {
+            "enabled": os.getenv("DEMO_SOCIAL_DATA_ENABLED", "false").lower() == "true",
+            "limit": max(1, min(int(os.getenv("DEMO_SOCIAL_DATA_LIMIT", "10")), 100)),
+            "mode": "synthetic-not-live",
+        },
     }
 
 
@@ -1083,12 +1088,20 @@ def latest_social_context(
                 asset_key, provider, owner_address=owner,
                 fallback_asset_key=fallback_asset_key,
             )
+        demo_metrics = [
+            item for item in metrics
+            if str(item.get("source_mode") or "").startswith("demo-synthetic")
+        ]
         return {
             "asset_key": asset_key,
             "fallback_asset_key": fallback_asset_key,
             "connected": bool(metrics),
             "binding_connected": x_identity or telegram_identity,
             "cache_hit": bool(metrics),
+            "demo_mode": bool(demo_metrics),
+            "data_provenance": (
+                "synthetic-demo-not-live" if demo_metrics else "provider-collected"
+            ),
             "stale": any(
                 state.get("cache", {}).get("stale")
                 for state in provider_states.values()
@@ -1189,6 +1202,94 @@ def _save_snapshot(
         conn.commit()
     finally:
         conn.close()
+
+
+DEMO_SOCIAL_SOURCE_MODE = "demo-synthetic-v1"
+
+
+def _demo_jitter(asset_key: str, provider: str) -> float:
+    digest = hashlib.sha256(f"{asset_key}:{provider}".encode("utf-8")).digest()
+    return 0.85 + (int.from_bytes(digest[:2], "big") / 65535) * 0.30
+
+
+def seed_demo_social_snapshots(limit: int = 10) -> dict:
+    """Seed deterministic demo metrics without superseding real snapshots."""
+    assets = list_social_assets(max(1, min(int(limit), 100)))
+    inserted = skipped_real = skipped_existing = 0
+    seeded_assets: list[str] = []
+    for rank, asset in enumerate(assets, 1):
+        asset_seeded = False
+        for provider in ("x", "telegram"):
+            conn = get_connection()
+            try:
+                rows = conn.execute(
+                    """SELECT source_mode FROM social_metric_snapshots
+                       WHERE asset_key = ? AND provider = ?
+                       ORDER BY collected_at DESC""",
+                    (asset["asset_key"], provider),
+                ).fetchall()
+            finally:
+                conn.close()
+            modes = [str(row["source_mode"] or "") for row in rows]
+            if any(not mode.startswith("demo-synthetic") for mode in modes):
+                skipped_real += 1
+                continue
+            if any(mode.startswith("demo-synthetic") for mode in modes):
+                skipped_existing += 1
+                continue
+
+            jitter = _demo_jitter(asset["asset_key"], provider)
+            if provider == "x":
+                mentions = max(120, round(18_000 * jitter / (rank ** 0.78)))
+                active_authors = max(30, round(mentions * (0.30 + rank * 0.008)))
+                engagements = max(mentions, round(mentions * (3.8 + jitter)))
+                metrics = {
+                    "followers": max(
+                        8_000, round(1_500_000 * jitter / (rank ** 0.72))
+                    ),
+                    "mentions_24h": mentions,
+                    "posts_24h": mentions,
+                    "active_authors_24h": active_authors,
+                    "engagements_24h": engagements,
+                    "engagement_rate": round(engagements / max(mentions, 1), 6),
+                    "sentiment": round(-0.10 + (jitter - 0.85) * 1.2, 4),
+                    "confidence": 0.15,
+                }
+            else:
+                posts = max(12, round(180 * jitter / (rank ** 0.48)))
+                authors = max(8, round(posts * (0.45 + rank * 0.01)))
+                engagements = max(posts, round(posts * (8 + jitter * 5)))
+                metrics = {
+                    "members": max(
+                        3_000, round(420_000 * jitter / (rank ** 0.66))
+                    ),
+                    "posts_24h": posts,
+                    "active_authors_24h": authors,
+                    "engagements_24h": engagements,
+                    "engagement_rate": round(engagements / max(posts, 1), 6),
+                    "confidence": 0.15,
+                }
+            metrics["raw_summary"] = {
+                "synthetic": True,
+                "demo_only": True,
+                "method": "deterministic-rank-weighted-fixture",
+                "warning": "Not collected from X or Telegram; do not use for decisions.",
+            }
+            _save_snapshot(
+                asset["asset_key"], provider, DEMO_SOCIAL_SOURCE_MODE, metrics,
+            )
+            inserted += 1
+            asset_seeded = True
+        if asset_seeded:
+            seeded_assets.append(asset["asset_key"])
+    return {
+        "mode": DEMO_SOCIAL_SOURCE_MODE,
+        "asset_count": len(seeded_assets),
+        "snapshot_count": inserted,
+        "skipped_real": skipped_real,
+        "skipped_existing": skipped_existing,
+        "assets": seeded_assets,
+    }
 
 
 def _x_collection_error(response: httpx.Response, endpoint: str) -> dict:

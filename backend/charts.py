@@ -498,6 +498,7 @@ def build_report_html_v2(report: dict) -> str:
     score = float(report.get("overall_score") or 0)
     risk = str(report.get("risk_level") or "unknown")
     conclusion = report.get("executive_conclusion") or report.get("recommendation") or ""
+    demo_notice = report.get("social_data_notice") if report.get("social_data_mode") == "synthetic-demo" else ""
 
     def esc(value):
         return html.escape(str(value or ""))
@@ -552,7 +553,10 @@ ul{{padding-left:20px}}li span,section small,.action small{{display:block;color:
 border-bottom:1px solid #292944}}.action>strong{{color:#8f87ff}}.action ul{{margin:3px 0}}
 .tags{{display:flex;flex-wrap:wrap;gap:6px}}.tags i{{font-style:normal;background:#242442;
 color:#bbb7ff;border-radius:999px;padding:3px 8px;font-size:11px}}.evidence{{border-left:3px solid #6c63ff}}
+.demo-notice{{margin:0 0 14px;padding:12px 14px;border:1px solid #ffb020;
+background:#33260d;color:#ffe1a3;border-radius:10px;font-weight:700}}
 </style></head><body>
+{f'<div class="demo-notice">{esc(demo_notice)}</div>' if demo_notice else ''}
 <h1>{esc(token.get('name') or 'Meme')} {f"({esc(str(token.get('symbol')).upper())})" if token.get('symbol') else ""}</h1>
 <p class="meta">{esc(persona)} · score {score:.1f}/10 · signal level {esc(risk)}</p>
 <div class="verdict"><b>{esc(report.get('decision_label') or 'Executive Conclusion')}</b>
