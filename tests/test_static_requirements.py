@@ -278,6 +278,20 @@ class StaticProductRequirementsTests(unittest.TestCase):
         ):
             self.assertIn(marker, APP + STYLE)
 
+    def test_comparison_checkbox_does_not_refresh_comparison_history(self):
+        self.assertIn('id="comparisonCreateButton"', APP)
+        toggle_start = APP.index("function toggleSelect(id, checked)")
+        toggle_end = APP.index("async function startInlineEdit", toggle_start)
+        toggle_body = APP[toggle_start:toggle_end]
+        self.assertIn("if (compareMode)", toggle_body)
+        self.assertIn("createButton.disabled = selectedWatchlist.size < 2", toggle_body)
+        compare_branch = toggle_body.split("if (compareMode)", 1)[1].split(
+            "// Edit mode", 1,
+        )[0]
+        self.assertIn("return;", compare_branch)
+        self.assertNotIn("renderWatchlist", compare_branch)
+        self.assertNotIn("renderComparisonHistory", compare_branch)
+
     def test_no_ipfs_onchain_metadata_has_warning_and_hard_limit(self):
         provider = (ROOT / "backend" / "image_provider.py").read_text(encoding="utf-8")
         example = (ROOT / ".env.example").read_text(encoding="utf-8")

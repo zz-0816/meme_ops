@@ -414,7 +414,7 @@ async function renderWatchlist(el) {
             : compareMode
             ? `<div class="comparison-selection-actions">
                 <span>Select 2–5 assets</span>
-                <button class="btn-small" ${selectedWatchlist.size < 2 ? 'disabled' : ''} onclick="openComparisonPersonaDialog()">Create comparison (${selectedWatchlist.size})</button>
+                <button id="comparisonCreateButton" class="btn-small" ${selectedWatchlist.size < 2 ? 'disabled' : ''} onclick="openComparisonPersonaDialog()">Create comparison (${selectedWatchlist.size})</button>
                </div>`
             : '';
 
@@ -646,10 +646,18 @@ function toggleSelect(id, checked) {
     }
     if (checked) selectedWatchlist.add(id);
     else selectedWatchlist.delete(id);
-    // 不重新渲染，只更新计数
+    // Do not re-render the whole sidebar for comparison checkbox changes.
     const countEl = document.getElementById('selectedWatchlistCount');
     if (countEl) countEl.textContent = `Selected ${selectedWatchlist.size}`;
-    // 更新底部操作栏
+    if (compareMode) {
+        const createButton = document.getElementById('comparisonCreateButton');
+        if (createButton) {
+            createButton.disabled = selectedWatchlist.size < 2;
+            createButton.textContent = `Create comparison (${selectedWatchlist.size})`;
+        }
+        return;
+    }
+    // Edit mode still needs to add/remove its conditional batch-delete bar.
     renderWatchlist(document.getElementById('sidebarContent'));
 }
 
