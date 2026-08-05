@@ -34,6 +34,9 @@ let state = {
     posterDrafts: {},
     analysisJobs: new Map(),
     reportRequests: {},
+    perspectiveReportCache: {},
+    reportAssetKeys: {},
+    activeReportAssetKey: null,
     socialConnections: {},
     analysisDraft: (() => {
         try { return JSON.parse(localStorage.getItem('meme_ops_analysis_draft')) || {prompt:'', reportStyle:''}; }
@@ -803,6 +806,7 @@ async function batchDeleteWatchlist() {
 async function loadHistoryDetail(id) {
     showLoading(true);
     try {
+        clearPerspectiveReportCache();
         const resp = await fetch(`${API_BASE}/api/analysis/${id}`, {headers: apiHeaders()});
         if (!resp.ok) throw new Error('Report not found');
         const data = await resp.json();
@@ -1570,6 +1574,7 @@ async function submitAnalysis() {
     if (!state.token) return alert('Connect your wallet before running a private analysis.');
     state.analysisDraft = {prompt, reportStyle: reportStyle || ''};
     localStorage.setItem('meme_ops_analysis_draft', JSON.stringify(state.analysisDraft));
+    clearPerspectiveReportCache();
     await startAnalysisJob({
         prompt,
         persona: state.currentPersona,
@@ -1815,6 +1820,17 @@ function renderAnalysisResult(data) {
         chain: data.chain || token.chain || null,
     };
     state.reportRequests[analysisId] = sourceRequest;
+    const reportPersona = report.persona || sourceRequest.persona || 'operator';
+    const assetKey = analysisReportAssetKey(data, sourceRequest);
+    if (state.activeReportAssetKey !== assetKey) {
+        clearPerspectiveReportCache();
+        state.activeReportAssetKey = assetKey;
+    }
+    state.reportAssetKeys[analysisId] = assetKey;
+    if (!state.perspectiveReportCache[assetKey]) {
+        state.perspectiveReportCache[assetKey] = {};
+    }
+    state.perspectiveReportCache[assetKey][reportPersona] = data;
     const container = ensureWorkspaceResults();
     const generationMode = report.generation_mode === 'deepseek'
         ? 'AI-personalized report'
@@ -1894,7 +1910,6 @@ function renderAnalysisResult(data) {
                 <button class="btn btn-primary" onclick="mintPoster(${analysisId})">Mint Poster NFT · Pay Gas in Wallet</button>
             </div>
         </div>`;
-    const reportPersona = report.persona || sourceRequest.persona || 'operator';
     const perspectiveSwitcher = `<div class="report-perspective-switcher" aria-label="Switch report perspective">
         <span>Perspective</span>
         ${[
@@ -1930,13 +1945,42 @@ async function switchReportPerspective(analysisId, persona) {
     }
     state.currentPersona = persona;
     localStorage.setItem('meme_ops_persona', persona);
+    const assetKey = state.reportAssetKeys[analysisId] || state.activeReportAssetKey;
+    const cached = assetKey && state.perspectiveReportCache[assetKey]?.[persona];
+    if (cached) {
+        ensureWorkspaceResults().innerHTML = '';
+        renderAnalysisResult(cached);
+        showToast(`Restored the cached ${personaLabel(persona)} report.`);
+        return;
+    }
     await startAnalysisJob({
         ...source,
         persona,
     }, {switchingFrom: analysisId});
 }
 
+function analysisReportAssetKey(data, sourceRequest = {}) {
+    const report = data.report || data;
+    const token = report.token || {};
+    const chain = normalizeChain(token.chain || data.chain || sourceRequest.chain || 'unknown');
+    const contractAddress = String(
+        token.contract_addr || data.contract_addr || sourceRequest.contract_addr || ''
+    ).trim().toLowerCase();
+    const identity = contractAddress || String(
+        token.symbol || token.name || data.token_name || sourceRequest.token_name
+        || sourceRequest.prompt || 'unknown'
+    ).trim().toLowerCase();
+    return `${chain}|${identity}`;
+}
+
+function clearPerspectiveReportCache() {
+    state.perspectiveReportCache = {};
+    state.reportAssetKeys = {};
+    state.activeReportAssetKey = null;
+}
+
 function backToMarketDiscovery() {
+    clearPerspectiveReportCache();
     if (currentHistoryContext) {
         loadWatchlistHistory(
             currentHistoryContext.tokenName,

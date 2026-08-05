@@ -330,6 +330,24 @@ class StaticProductRequirementsTests(unittest.TestCase):
         self.assertIn("report-perspective-switcher", APP + STYLE)
         self.assertIn("switchReportPerspective", APP)
 
+    def test_generated_persona_reports_are_cached_for_the_active_asset_page(self):
+        for marker in (
+            "perspectiveReportCache", "reportAssetKeys", "activeReportAssetKey",
+            "analysisReportAssetKey", "clearPerspectiveReportCache",
+            "Restored the cached",
+        ):
+            self.assertIn(marker, APP)
+        switch_start = APP.index("async function switchReportPerspective")
+        switch_end = APP.index("function analysisReportAssetKey", switch_start)
+        switch_body = APP[switch_start:switch_end]
+        self.assertIn("perspectiveReportCache[assetKey]?.[persona]", switch_body)
+        self.assertIn("renderAnalysisResult(cached)", switch_body)
+        self.assertLess(
+            switch_body.index("renderAnalysisResult(cached)"),
+            switch_body.index("await startAnalysisJob"),
+        )
+        self.assertNotIn("meme_ops_perspective_report_cache", APP)
+
     def test_analysis_jobs_are_non_blocking_cancellable_and_restorable(self):
         for marker in (
             '@app.post("/api/analysis/jobs"',
