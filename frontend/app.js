@@ -380,7 +380,7 @@ async function renderWatchlist(el) {
         const toolbar = editMode || compareMode
             ? `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span class="edit-toggle" onclick="${compareMode ? 'toggleCompareMode()' : 'toggleEditMode()'}" style="color:var(--red);cursor:pointer;">Cancel</span>
-                <span id="selectedWatchlistCount" style="font-size:0.75rem;color:var(--text-muted);">Selected ${selectedWatchlist.size}</span>
+                <span id="selectedWatchlistCount" style="font-size: 12px;color:var(--text-muted);">Selected ${selectedWatchlist.size}</span>
                </div>`
             : `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="display:flex;gap:12px;">
@@ -401,12 +401,12 @@ async function renderWatchlist(el) {
                         ${editMode || compareMode
                             ? `<input type="checkbox" id="wl_cb_${item.id}" onchange="toggleSelect(${item.id},this.checked)" ${selectedWatchlist.has(item.id)?'checked':''} style="flex-shrink:0;">`
                             : ''}
-                        <span style="flex:1;cursor:pointer;font-size:0.85rem;font-weight:600;" onclick="${editMode || compareMode?'':`loadWatchlistHistory('${item.token_name.replace(/'/g,"\\'")}','${(item.chain||'?').replace(/'/g,"\\'")}',${item.id})`}">
-                            ${item.token_name} <span style="font-size:0.7rem;color:var(--text-muted);font-weight:400;">[${item.chain||'?'}]</span>
+                        <span style="flex:1;cursor:pointer;font-size: 14px;font-weight: 400;" onclick="${editMode || compareMode?'':`loadWatchlistHistory('${item.token_name.replace(/'/g,"\\'")}','${(item.chain||'?').replace(/'/g,"\\'")}',${item.id})`}">
+                            ${item.token_name} <span style="font-size: 10px;color:var(--text-muted);font-weight: 400;">[${item.chain||'?'}]</span>
                         </span>
-                        ${!editMode && !compareMode ? `<span style="cursor:pointer;font-size:0.85rem;flex-shrink:0;" onclick="event.stopPropagation();startInlineEdit(${item.id},this)">📝</span>` : ''}
+                        ${!editMode && !compareMode ? `<span style="cursor:pointer;font-size: 14px;flex-shrink:0;" onclick="event.stopPropagation();startInlineEdit(${item.id},this)">📝</span>` : ''}
                     </div>
-                    ${!editMode && !compareMode && hasNote ? `<div style="font-size:0.75rem;color:var(--accent);margin-top:3px;word-break:break-all;">${escapeHtml(item.notes)}</div>` : ''}
+                    ${!editMode && !compareMode && hasNote ? `<div style="font-size: 12px;color:var(--accent);margin-top:3px;word-break:break-all;">${escapeHtml(item.notes)}</div>` : ''}
                 </div>`;
             }).join('');
 
@@ -424,7 +424,7 @@ async function renderWatchlist(el) {
         el.innerHTML = toolbar + `<div id="watchlistItems">${listHtml}</div>` + actionBar + `
             <div id="comparisonHistory" class="comparison-history"></div>
             <div style="margin-top:16px;padding-top:8px;border-top:1px solid var(--border);">
-                <span style="font-size:0.7rem;color:var(--text-muted);cursor:pointer;" onclick="clearAllHistory()">Clear analysis history</span>
+                <span style="font-size: 10px;color:var(--text-muted);cursor:pointer;" onclick="clearAllHistory()">Clear analysis history</span>
             </div>`;
         await renderComparisonHistory();
     } catch (e) {
@@ -677,7 +677,7 @@ async function startInlineEdit(itemId, iconEl) {
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentNote;
-    input.style.cssText = 'flex:1;padding:2px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-input);color:var(--text);font-size:0.8rem;min-width:0;';
+    input.style.cssText = 'flex:1;padding:2px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-input);color:var(--text);font-size: 12px;min-width:0;';
     input.placeholder = 'Add a private note...';
 
     const save = async () => {
@@ -746,7 +746,7 @@ async function loadWatchlistHistory(tokenName, chain, watchlistId = null) {
             <div class="result-section">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                     <h3>📋 ${tokenName} [${chain}] — ${records.length} reports</h3>
-                    <span style="font-size:0.75rem;color:var(--red);cursor:pointer;" onclick="clearTokenHistory('${tokenName.replace(/'/g,"\\'")}','${chain.replace(/'/g,"\\'")}')">Clear</span>
+                    <span style="font-size: 12px;color:var(--red);cursor:pointer;" onclick="clearTokenHistory('${tokenName.replace(/'/g,"\\'")}','${chain.replace(/'/g,"\\'")}')">Clear</span>
                 </div>
                 <div style="display:flex;flex-direction:column;gap:6px;">
                     ${records.map(r => {
@@ -754,13 +754,13 @@ async function loadWatchlistHistory(tokenName, chain, watchlistId = null) {
                         return `
                         <div id="history-record-${r.id}" data-history-record style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--bg-input);border-radius:8px;cursor:pointer;" onclick="loadHistoryDetail(${r.id})">
                             <div style="display:flex;align-items:center;gap:10px;">
-                                <span style="font-size:0.8rem;color:var(--accent);">${personaMap[r.persona]||'🔍'}</span>
-                                <span style="font-weight:600;">${r.overall_score ?? '?'}/10</span>
-                                <span class="risk-badge ${r.risk_level||''}" style="font-size:0.7rem;padding:2px 8px;">${r.risk_level||'?'}</span>
+                                <span style="font-size: 12px;color:var(--accent);">${personaMap[r.persona]||'🔍'}</span>
+                                <span style="font-weight: 400;">${r.overall_score ?? '?'}/10</span>
+                                <span class="risk-badge ${r.risk_level||''}" style="font-size: 10px;padding:2px 8px;">${r.risk_level||'?'}</span>
                             </div>
                             <div style="display:flex;align-items:center;gap:12px;">
-                                <span style="font-size:0.8rem;color:var(--text-muted);">${formatDate(r.created_at)}</span>
-                                <span onclick="event.stopPropagation();deleteHistoryItem(${r.id},this)" style="color:var(--red);cursor:pointer;font-size:0.85rem;">✕</span>
+                                <span style="font-size: 12px;color:var(--text-muted);">${formatDate(r.created_at)}</span>
+                                <span onclick="event.stopPropagation();deleteHistoryItem(${r.id},this)" style="color:var(--red);cursor:pointer;font-size: 14px;">✕</span>
                             </div>
                         </div>`;
                     }).join('')}
@@ -910,7 +910,7 @@ let pendingPostImage = null;
 async function renderCommunity() {
     const el = document.getElementById('mainContent');
     if (!state.address) {
-        el.innerHTML = '<div class="empty-state"><p style="font-size:2rem;">👛</p><p>Connect a wallet to join the community.</p></div>';
+        el.innerHTML = '<div class="empty-state"><p style="font-size: 32px;">👛</p><p>Connect a wallet to join the community.</p></div>';
         return;
     }
     if (!state.token) { el.innerHTML = '<div class="empty-state">Loading...</div>'; return; }
@@ -1334,16 +1334,26 @@ function renderOverview() {
     document.getElementById('sidebar').classList.remove('visible');
     el.innerHTML = `
         <section class="overview-hero">
-            <span class="eyebrow">OPS AGENT FOR MEME COMMUNITIES</span>
-            <h1>Turn meme signals into an operating plan.</h1>
-            <p>meme_ops separates four decision lenses. The default Community Operator
-            agent finds narrative opportunities, states what the data cannot prove, and
-            turns evidence into a seven-day community action plan.</p>
+            <div class="hero-copy">
+                <span class="eyebrow">✣ OPS AGENT FOR MEME COMMUNITIES</span>
+                <h1>Turn meme<br>signals into an<br><em>operating plan.</em></h1>
+                <p><strong>meme_ops</strong> finds narrative opportunities, makes uncertainty clear, and turns evidence into a seven-day community action plan.</p>
+            </div>
             <div class="overview-actions">
                 ${state.token
-                    ? `<button class="btn btn-primary" onclick="switchTab('analysis')">Open private workspace</button>`
-                    : `<button class="btn btn-primary" onclick="connectWallet()">Connect wallet to analyze</button>`}
-                <button class="btn btn-secondary" onclick="switchTab('community')">Explore community</button>
+                    ? `<button class="btn btn-primary" onclick="switchTab('analysis')">Start an analysis ↗</button>`
+                    : `<button class="btn btn-primary" onclick="connectWallet()">Start an analysis ↗</button>`}
+                <button class="btn btn-secondary" onclick="switchTab('community')">Explore community ›</button>
+            </div>
+            <div class="hero-visual hero-analytics-visual" aria-hidden="true">
+                <div class="hero-analytics-card">
+                    <span class="hero-analytics-label">SIGNAL BURST</span>
+                    <div class="hero-analytics-bars"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                    <small>narrative velocity</small>
+                    <strong>+28.4%</strong>
+                </div>
+                <i class="hero-orb hero-orb-pink"></i><i class="hero-orb hero-orb-mint"></i><i class="hero-orb hero-orb-yellow"></i>
+                <b class="hero-spark hero-spark-one">✳</b><b class="hero-spark hero-spark-two">✦</b>
             </div>
         </section>
         <section class="overview-social">
@@ -1352,8 +1362,8 @@ function renderOverview() {
                     <span class="eyebrow">LIVE SOCIAL INTELLIGENCE</span>
                     <h2>Connect the communities you operate.</h2>
                     <p>Authorize read-only X and Telegram access so the Ops Agent can ground reports in current community signals. Connections remain private to this wallet.</p>
+                    <span class="private-pill">Wallet private</span>
                 </div>
-                <span class="private-pill">Wallet private</span>
             </div>
             <div id="overviewSocialConnections">
                 ${state.token
@@ -1367,10 +1377,10 @@ function renderOverview() {
             </div>
         </section>
         <section class="overview-grid">
-            <article><span>01</span><h3>Conclusion first</h3><p>See the role-specific verdict before supporting data.</p></article>
-            <article><span>02</span><h3>Actionable operations</h3><p>Receive daily activities, dependencies, and measurable KPIs.</p></article>
-            <article><span>03</span><h3>Honest evidence</h3><p>Disconnected sources stay neutral and are never presented as zero.</p></article>
-            <article><span>04</span><h3>Private memory</h3><p>Your wallet keeps modules, report preferences, history, and watchlists private.</p></article>
+            <article class="mosaic-tile tile-analyze"><span class="tile-number tile-number-purple">01</span><h3>Conclusion first</h3><p>See the role-specific verdict before supporting data.</p><b class="tile-arrow">↗</b></article>
+            <article class="mosaic-tile tile-statement"><span class="tile-number tile-number-pink">02</span><h3>Actionable operations</h3><p>Receive daily activities, dependencies, and measurable KPIs.</p><b class="tile-arrow">↗</b></article>
+            <article class="mosaic-tile tile-compare"><span class="tile-number tile-number-mint">03</span><h3>Honest evidence</h3><p>Disconnected sources stay neutral and are never presented as zero.</p><b class="tile-arrow">↗</b></article>
+            <article class="mosaic-tile tile-community"><span class="tile-number tile-number-yellow">04</span><h3>Private memory</h3><p>Your wallet keeps modules, report preferences, history, and watchlists private.</p><b class="tile-arrow">↗</b></article>
         </section>`;
     if (state.token) loadSocialConnections('overviewSocialConnections', true);
 }
@@ -1430,8 +1440,9 @@ function renderAnalysisShell() {
     const el = document.getElementById('mainContent');
     el.innerHTML = `
         <div class="analysis-controls">
-            <div class="persona-selector">
-                <span>Perspective</span>
+            <div class="analysis-eyebrow">OPS AGENT / ANALYZE</div>
+            <div class="persona-selector analysis-perspective-row">
+                <label for="personaSelect">Perspective</label>
                 <select id="personaSelect" onchange="state.currentPersona=this.value;localStorage.setItem('meme_ops_persona',this.value)">
                     <option value="operator">Community Operator</option>
                     <option value="investor">Investor</option>
@@ -1439,16 +1450,16 @@ function renderAnalysisShell() {
                     <option value="researcher">Researcher</option>
                 </select>
             </div>
-            <div class="input-section">
+            <div class="input-section analysis-primary-row">
                 <div class="input-group">
                     <input id="analysisInput" ${state.token ? '' : 'disabled'} value="${escapeHtml(state.analysisDraft.prompt || '')}" placeholder="${state.token ? 'Meme name or name + chain (example: DOGE Solana)' : 'Connect a wallet to unlock private analysis'}" oninput="saveAnalysisDraft()" onkeydown="if(event.key==='Enter')submitAnalysis()" />
                     <button class="btn btn-primary" id="analysisBtn" onclick="${state.token ? 'submitAnalysis()' : 'connectWallet()'}">${state.token ? 'Analyze' : 'Connect wallet'}</button>
                 </div>
-                <label class="report-style-field" for="reportStyleInput">
-                    <span>Report writing direction <small>optional</small></span>
-                    <textarea id="reportStyleInput" ${state.token ? '' : 'disabled'} maxlength="500" oninput="saveAnalysisDraft()" placeholder="Example: friendly and concise, or academic with methodology and limitations">${escapeHtml(state.analysisDraft.reportStyle || '')}</textarea>
-                </label>
             </div>
+            <label class="report-style-field analysis-report-direction" for="reportStyleInput">
+                <span>Report writing direction <small>optional</small></span>
+                <textarea id="reportStyleInput" ${state.token ? '' : 'disabled'} maxlength="500" oninput="saveAnalysisDraft()" placeholder="Example: friendly and concise, or academic with methodology and limitations">${escapeHtml(state.analysisDraft.reportStyle || '')}</textarea>
+            </label>
             <p class="analysis-hint">${state.token ? 'Short example: pepe sol. Click a Top 10 asset to analyze it from the selected perspective. Use + to add it to your comparison list.' : 'Rankings are public. Reports, learned modules, history, and comparisons unlock after wallet authentication.'}</p>
         </div>
         <div id="analysisResults"></div>
@@ -1852,8 +1863,8 @@ function renderAnalysisResult(data) {
             <div style="display:flex;align-items:center;gap:12px;">
                 ${icon}
                 <div style="flex:1;">
-                    <div style="font-weight:700;font-size:1.05rem;">${token.name || '?'} ${token.symbol ? '('+token.symbol.toUpperCase()+')' : ''}</div>
-                    <div style="font-size:0.8rem;color:var(--text-muted);">
+                    <div style="font-weight: 400;font-size: 16px;">${token.name || '?'} ${token.symbol ? '('+token.symbol.toUpperCase()+')' : ''}</div>
+                    <div style="font-size: 12px;color:var(--text-muted);">
                         ${token.chain || data.chain || '?'} · ${contractAddress
                             ? `<a class="contract-link" href="https://dexscreener.com/search?q=${encodeURIComponent(contractAddress)}" target="_blank" rel="noopener noreferrer" title="View ${contractAddress} on DexScreener">${shortenAddr(contractAddress)} ↗</a>`
                             : '—'}
@@ -1868,7 +1879,7 @@ function renderAnalysisResult(data) {
         </div>`;
 
     // ② 文字分析卡片
-    const recHtml = charts.recommendation_html || '';
+    const recHtml = prepareReportFrameHtml(charts.recommendation_html || '');
     const recCard = recHtml
         ? `<div class="poster-card" style="margin-bottom:16px;">
             <iframe class="analysis-report-frame" srcdoc="${recHtml.replace(/"/g, '&quot;')}" onload="resizeAnalysisFrame(this)" scrolling="auto" title="Written analysis report"></iframe>
@@ -1889,7 +1900,7 @@ function renderAnalysisResult(data) {
             <div style="display:flex;gap:12px;overflow-x:auto;">
                 ${chartKeys.map((k, i) => charts[k]
                     ? `<div style="flex:1;min-width:200px;text-align:center;">
-                        <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;color:var(--text);">${labels[i]}</div>
+                        <div style="font-weight: 400;font-size: 14px;margin-bottom:6px;color:var(--text);">${labels[i]}</div>
                         <img class="clickable-report-chart" src="${charts[k]}" onclick="openImageViewer(this.src,this.alt)" style="width:100%;border-radius:8px;" alt="${labels[i]}" title="Click to enlarge" />
                     </div>`
                     : '').join('')}
@@ -1930,8 +1941,8 @@ function renderAnalysisResult(data) {
         <div class="poster-toolbar"><button class="back-link" onclick="backToMarketDiscovery()">← Back to Top 10</button><strong>${escapeHtml(personaLabel(report.persona))} Report</strong><span>${formatDate(new Date().toISOString())}</span></div>
         ${perspectiveSwitcher}
         <div class="editable-block">${tokenHeader}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove token details">×</button></div>
+        ${recCard ? `<div class="editable-block report-verdict">${recCard}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove written analysis">×</button></div>` : ''}
         ${chartImgs ? `<div class="editable-block chart-first">${chartImgs}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove charts">×</button></div>` : ''}
-        ${recCard ? `<div class="editable-block report-after-charts">${recCard}<button class="remove-block" onclick="removePosterBlock(this)" aria-label="Remove written analysis">×</button></div>` : ''}
         ${styleEditor}
     </section>`;
     container.insertAdjacentHTML('afterbegin', orderedCard);
@@ -1971,6 +1982,36 @@ function analysisReportAssetKey(data, sourceRequest = {}) {
         || sourceRequest.prompt || 'unknown'
     ).trim().toLowerCase();
     return `${chain}|${identity}`;
+}
+
+// Presentation-only normalization for the report iframe. The report payload
+// and generated content remain untouched; this keeps the embedded report in
+// the same visual system as the approved Meme Boom shell.
+function prepareReportFrameHtml(html) {
+    if (!html) return html;
+    const style = `<style id="meme-boom-report-theme">
+        :root { color-scheme: light; }
+        *, *::before, *::after { box-sizing: border-box; }
+        html, body { background: #fffdf8 !important; color: #111111 !important; }
+        body { padding: clamp(22px, 4vw, 52px) !important; font-family: "PingFang SC", "PingFang TC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", Arial, sans-serif !important; font-size: 16px !important; font-weight: 400 !important; line-height: 1.68 !important; }
+        *, *::before, *::after, h1, h2, h3, h4, strong, b { font-family: "PingFang SC", "PingFang TC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", Arial, sans-serif !important; font-weight: 400 !important; }
+        h1 { font-size: clamp(32px, 4vw, 68px) !important; line-height: .96 !important; margin: 0 0 22px !important; }
+        h2 { font-size: clamp(22px, 2.5vw, 38px) !important; line-height: 1.04 !important; margin: 34px 0 12px !important; }
+        h3 { font-size: 18px !important; margin: 28px 0 8px !important; }
+        p { color: #242323 !important; margin: 0 0 16px !important; }
+        section, .section, .rec-box, .verdict { background: #ffffff !important; color: #111111 !important; border: 0 !important; border-left: 7px solid #7b61d8 !important; border-radius: 0 18px 18px 0 !important; box-shadow: none !important; padding: 22px 26px !important; margin: 26px 0 !important; }
+        .verdict { background: #d8cfff !important; border-left-color: #111111 !important; }
+        .risk { border: 2px solid #111111 !important; color: #111111 !important; background: #7ff1bd !important; }
+        .tags i, .style-profile span, .keyword { background: #ffe18a !important; color: #111111 !important; }
+        ul, ol { padding-left: 1.4em !important; }
+        li { margin: 9px 0 !important; }
+        table { width: 100% !important; border-collapse: collapse !important; background: #ffffff !important; }
+        th { background: #7ff1bd !important; color: #111111 !important; text-align: left !important; }
+        th, td { padding: 12px 14px !important; border-bottom: 1px solid #ded9ce !important; }
+        @media (max-width: 640px) { body { padding: 18px !important; font-size: 16px !important; } section, .section, .rec-box, .verdict { padding: 18px !important; } }
+    </style>`;
+    if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${style}</head>`);
+    return `${style}${html}`;
 }
 
 function clearPerspectiveReportCache() {
@@ -2073,7 +2114,7 @@ async function addToWatchlistFromResult(name, chain, symbol, addr) {
             alert('This asset is already in your watchlist.');
         } else {
             const el = document.createElement('div');
-            el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--green);color:var(--bg);padding:8px 16px;border-radius:8px;font-size:0.85rem;z-index:999;';
+            el.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--green);color:var(--bg);padding:8px 16px;border-radius:8px;font-size: 14px;z-index:999;';
             el.textContent = 'Added to watchlist';
             document.body.appendChild(el);
             setTimeout(() => el.remove(), 2000);
@@ -2248,7 +2289,7 @@ async function renderProfile() {
     const addr = state.currentProfile || state.address;
     if (!addr) {
         document.getElementById('mainContent').innerHTML =
-            '<div class="empty-state"><p style="font-size:2rem;">👛</p><p>Connect a wallet to open Home.</p></div>';
+            '<div class="empty-state"><p style="font-size: 32px;">👛</p><p>Connect a wallet to open Home.</p></div>';
         return;
     }
 
