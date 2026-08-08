@@ -641,7 +641,6 @@ body {
 .feed-action.view-only { cursor:default; pointer-events:none; user-select:none; }
 .feed-action.view-only:hover { color:var(--text-muted); }
 .feed-action.bookmarked { color:var(--accent); }
-.feed-action.quote-action { font-size: 12px; }
 .post-detail-card { cursor:default; padding-top:20px; }
 .post-detail-card:hover { background:transparent; }
 .conversation-header { display:flex; align-items:center; gap:14px; padding:14px 18px; border-bottom:1px solid var(--border); }
@@ -2335,7 +2334,6 @@ h1, h2, h3, h4, h5, h6, strong, b {
 
 /* Desktop Overview is composed as a single-screen dashboard/landing view. */
 @media (min-width: 901px) {
-    html:has(.overview-hero), body:has(.overview-hero) { overflow-y: hidden; }
     body:has(.overview-hero) .topnav { min-height: 62px; margin-top: 10px; margin-bottom: 14px; padding-top: 7px; padding-bottom: 7px; }
     body:has(.overview-hero) .main-content { padding-bottom: 18px; }
     body:has(.overview-hero) .overview-hero { min-height: 390px; padding-top: 39px; padding-bottom: 29px; }
@@ -2419,6 +2417,30 @@ h1, h2, h3, h4, h5, h6, strong, b {
         padding-bottom: 30px;
     }
 }
+/* Community post actions: six compact X-style controls. */
+.feed-actions { position: relative; width: 100%; max-width: none; gap: 0; align-items: center; }
+.feed-actions > .feed-action, .feed-actions > .post-action-repost { flex: 1 1 0; min-width: 0; }
+.feed-action { justify-content: center; gap: 4px; }
+.feed-action .action-icon { width: 30px; height: 30px; font-size: 0; }
+.post-action-svg { display: block; width: 18px; height: 18px; }
+.post-action-repost { position: relative; display: flex; }
+.post-action-repost .repost-trigger { width: 100%; }
+.repost-menu { position: absolute; z-index: 20; left: 50%; bottom: calc(100% + 8px); display: none; min-width: 142px; padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 28px rgba(17,17,17,.16); transform: translateX(-50%); }
+.post-action-repost.is-open .repost-menu { display: grid; }
+.repost-menu button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; font: inherit; text-align: left; }
+.repost-menu button:hover { background: var(--surface); color: var(--accent); }
+.repost-menu .post-action-svg { width: 17px; height: 17px; }
+.feed-action.reply-action:hover { color: #1d9bf0; }
+.feed-action.repost-trigger:hover, .feed-action.reposted { color: #00ba7c; }
+.feed-action.like-action:hover, .feed-action.liked { color: #f91880; }
+.feed-action.view-action:hover { color: var(--text-muted); }
+.feed-action.bookmark-action:hover, .feed-action.bookmarked:hover, .feed-action.bookmarked { color: #1d9bf0; }
+.feed-action.share-action:hover { color: #1d9bf0; }
+.feed-action.reply-action:hover .action-icon { background: rgba(29,155,240,.12); }
+.feed-action.repost-trigger:hover .action-icon, .feed-action.reposted .action-icon { background: rgba(0,186,124,.12); }
+.feed-action.like-action:hover .action-icon, .feed-action.liked .action-icon { background: rgba(249,24,128,.12); }
+.feed-action.bookmark-action:hover .action-icon, .feed-action.bookmarked .action-icon, .feed-action.share-action:hover .action-icon { background: rgba(29,155,240,.12); }
+.like-action.liked .post-action-svg, .bookmark-action.bookmarked .post-action-svg { fill: currentColor; }
 
 /* Match the reference composition: generous desktop gutters around the
    complete page composition while leaving compact breakpoints untouched. */
@@ -2430,6 +2452,17 @@ h1, h2, h3, h4, h5, h6, strong, b {
     }
     .main-content {
         flex: 0 1 auto;
+    }
+}
+
+/* Overview outer composition only. */
+@media (min-width: 901px) {
+    body:has(.overview-hero) .topnav,
+    body:has(.overview-hero) .main-content {
+        width: min(1440px, calc(100% - 32px));
+        max-width: 1440px;
+        margin-left: auto;
+        margin-right: auto;
     }
 }
 

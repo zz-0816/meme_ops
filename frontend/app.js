@@ -1067,6 +1067,39 @@ async function viewMention(name) {
     if (user) viewProfile(user.address);
 }
 
+function postActionIcon(type) {
+    const paths = {
+        like: '<path d="M608 256a53.333333 53.333333 0 0 0-106.666667 0v42.666667a202.666667 202.666667 0 0 1-170.666666 200.106666V725.333333A96 96 0 0 0 426.666667 821.333333h298.666666l2.730667 0.128c7.381333 0.64 16.810667-2.048 26.794667-12.032 10.282667-10.282667 19.541333-27.008 24.661333-48.725333l41.685333-208.64A53.248 53.248 0 0 0 768 501.333333h-128a32 32 0 0 1-32-32V256zM160 810.666667a10.666667 10.666667 0 0 0 10.666667 10.666666h85.333333a10.666667 10.666667 0 0 0 10.666667-10.666666v-309.333334H170.666667a10.666667 10.666667 0 0 0-10.666667 10.666667v298.666667z m512-373.333334H768A117.333333 117.333333 0 0 1 885.333333 554.666667c0 2.133333-0.213333 4.224-0.64 6.314666l-42.666666 213.333334-0.213334 0.981333c-7.168 30.592-21.205333 58.88-41.685333 79.36-20.224 20.224-46.506667 32.341333-75.093333 30.677333H426.666667c-38.698667 0-75.946667-14.08-104.96-39.253333a74.581333 74.581333 0 0 1-65.706667 39.253333H170.666667A74.666667 74.666667 0 0 1 96 810.666667v-298.666667A74.666667 74.666667 0 0 1 170.666667 437.333333h128A138.666667 138.666667 0 0 0 437.333333 298.666667V256a117.333333 117.333333 0 0 1 234.666667 0v181.333333z"/>',
+        reply: '<path d="M938.666667 138.666667a32 32 0 0 1 32 32v624.64a32 32 0 0 1-32 32H317.482667l-215.68 129.28a32.042667 32.042667 0 0 1-48.469334-27.434667V170.666667A32 32 0 0 1 85.333333 138.666667h853.333334zM117.333333 872.661333l174.890667-104.789333 3.84-1.962667a32.085333 32.085333 0 0 1 12.586667-2.56H906.666667V202.666667H117.333333v669.994666z"/><path d="M757.333333 448V512H266.666667v-64h490.666666z"/>',
+        share: '<path d="M138.666667 768V341.333333A117.333333 117.333333 0 0 1 256 224h288v64H256A53.333333 53.333333 0 0 0 202.666667 341.333333v426.666667A53.333333 53.333333 0 0 0 256 821.333333h426.666667A53.333333 53.333333 0 0 0 736 768v-288h64V768A117.333333 117.333333 0 0 1 682.666667 885.333333H256A117.333333 117.333333 0 0 1 138.666667 768z"/><path d="M877.226667 192L469.333333 599.893333 424.106667 554.666667l407.893333-407.893334 45.226667 45.226667z"/><path d="M821.333333 202.666667h-213.333333v-64H853.333333a32 32 0 0 1 32 32v245.333333h-64v-213.333333z"/>',
+        repost: '<path d="M278.442667 145.834667a32 32 0 0 1 42.837333 2.218666L514.56 341.333333 469.333333 386.56l-170.666666-170.666667-170.666667 170.666667L82.773333 341.333333l193.28-193.28 2.389334-2.218666z"/><path d="M266.666667 181.333333h64v405.333334h-64v-405.333334zM941.226667 682.666667l-193.28 193.28a32 32 0 0 1-45.226667 0L509.44 682.666667 554.666667 637.44l170.666666 170.666667 170.666667-170.666667L941.226667 682.666667z"/><path d="M693.333333 394.666667h64v448h-64V394.666667z"/>',
+        bookmark: '<path d="M512 53.333333a32 32 0 0 1 28.714667 17.834667l124.373333 251.733333 278.186667 40.362667a32 32 0 0 1 17.706666 54.570667l-201.557333 195.968 47.530667 276.778666a32 32 0 0 1-46.464 33.749334l-248.192-130.688-248.832 130.688a32 32 0 0 1-46.421334-33.749334L264.533333 613.802667 63.061333 417.834667a31.957333 31.957333 0 0 1 17.706667-54.613334l278.101333-40.32 124.416-251.733333A32 32 0 0 1 512 53.333333zM408.832 366.421333a32 32 0 0 1-24.064 17.493334l-230.570667 33.322666 167.082667 162.474667a32 32 0 0 1 9.216 28.330667l-39.424 229.461333 206.336-108.373333 3.584-1.578667a32 32 0 0 1 26.197333 1.621333l205.653334 108.245334-39.338667-229.376a32 32 0 0 1 9.216-28.330667l167.04-162.474667-230.528-33.322666a32 32 0 0 1-24.064-17.493334L512 157.568 408.832 366.421333z"/>',
+        views: '<path d="M221.63844522 945.47059122q-29.62779351 0-50.72038673-21.10456641Q149.8134921 903.2734301 149.8134921 873.64563808v-718.24953428q0-29.62779351 21.10456639-50.73235991Q192.01065321 83.57114919 221.63844522 83.57114919h323.21229058q29.62779351 0 50.7323599 21.0925947Q616.67569041 125.76831029 616.67569041 155.3961038v125.69366724h418.97889377q29.62779351 0 50.73235991 21.09259471Q1107.47953878 323.28693216 1107.47953878 352.91472565v520.73091243q0 29.62779351-21.09259469 50.72038673Q1065.28237767 945.47059122 1035.65458418 945.47059122H221.63844522z m0-71.82495314h323.21229058v-125.69366871H221.63844522v125.69366871z m0-197.51862332h323.21229058v-125.69366726H221.63844522v125.69366726z m0-197.51862185h323.21229058v-125.69366726H221.63844522v125.69366726z m0-197.51862187h323.21229058v-125.69366724H221.63844522v125.69366724z m395.03724519 592.55586704h418.97889377v-520.73091243H616.67569041v520.73091243z m131.67908123-323.21229058q-15.26280258 0-25.58165447-10.39067769-10.33082211-10.37870599-10.33082357-25.73727486 0-15.34659862 10.33082357-25.52180034 10.31885188-10.17520172 25.58165447-10.1752017h125.69366725q15.26280258 0 25.59362616 10.39067769 10.31885188 10.37870599 10.3188504 25.73727485 0 15.34659862-10.3188504 25.52180033-10.33082211 10.17520172-25.59362616 10.17520172H748.35477164z m0 197.51862187q-15.26280258 0-25.58165447-10.3906777-10.33082211-10.37870599-10.33082357-25.73727486 0-15.34659862 10.33082357-25.52179886 10.31885188-10.17520319 25.58165447-10.17520319h125.69366725q15.26280258 0 25.59362616 10.3906777 10.31885188 10.37870599 10.3188504 25.73727485 0 15.34659862-10.3188504 25.52180033-10.33082211 10.17520172-25.59362616 10.17520173H748.35477164z"/>',
+    };
+    const viewBoxes = {views: '0 0 1263 1024', default: '0 0 1024 1024'};
+    return `<svg class="post-action-svg" viewBox="${viewBoxes[type] || viewBoxes.default}" fill="currentColor" aria-hidden="true">${paths[type]}</svg>`;
+}
+
+function toggleRepostMenu(event, postId, button) {
+    event.stopPropagation();
+    const wrapper = button.closest('.post-action-repost');
+    const wasOpen = wrapper.classList.contains('is-open');
+    document.querySelectorAll('.post-action-repost.is-open').forEach(item => {
+        item.classList.remove('is-open');
+        item.querySelector('.repost-trigger')?.setAttribute('aria-expanded', 'false');
+    });
+    if (!wasOpen) {
+        wrapper.classList.add('is-open');
+        button.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function closeRepostMenu(menuItem) {
+    const wrapper = menuItem.closest('.post-action-repost');
+    wrapper?.classList.remove('is-open');
+    wrapper?.querySelector('.repost-trigger')?.setAttribute('aria-expanded', 'false');
+}
+
 function renderPost(p, detail = false) {
     const addr = shortenAddr(p.author);
     const name = p.author_nickname || addr;
@@ -1101,19 +1134,28 @@ function renderPost(p, detail = false) {
             <div class="feed-content">${renderRichPostText(p.content)}</div>
             ${imageEl}${attachedEl}${quotedEl}
             <div class="feed-actions">
-                <button class="feed-action" onclick="${stop}openPostDetail(${p.id}, true)" aria-label="Reply">
-                    <span class="action-icon">◯</span><span>${p.reply_count || 0}</span>
+                <button class="feed-action reply-action" onclick="${stop}openPostDetail(${p.id}, true)" aria-label="Reply">
+                    <span class="action-icon">${postActionIcon('reply')}</span><span>${p.reply_count || 0}</span>
                 </button>
-                <button class="feed-action ${p.reposted ? 'reposted' : ''} ${isOwnPost ? 'disabled' : ''}" onclick="${stop}repostPost(${p.id}, this)" ${isOwnPost ? 'disabled title="You cannot repost your own post"' : ''} aria-label="Repost">
-                    <span class="action-icon">↻</span><span>${p.repost_count || 0}</span>
+                <div class="post-action-repost">
+                    <button class="feed-action repost-trigger ${p.reposted ? 'reposted' : ''} ${isOwnPost ? 'disabled' : ''}" onclick="${stop}toggleRepostMenu(event, ${p.id}, this)" ${isOwnPost ? 'disabled title="You cannot repost your own post"' : ''} aria-label="Repost" aria-haspopup="menu" aria-expanded="false">
+                    <span class="action-icon">${postActionIcon('repost')}</span><span>${p.repost_count || 0}</span>
+                    </button>
+                    <div class="repost-menu" role="menu" aria-label="Repost options">
+                        <button type="button" role="menuitem" onclick="${stop}repostPost(${p.id}, this.closest('.post-action-repost').querySelector('.repost-trigger')); closeRepostMenu(this)">
+                            ${postActionIcon('repost')}<span>Repost</span>
+                        </button>
+                        <button type="button" role="menuitem" onclick="${stop}quotePost(${p.id}); closeRepostMenu(this)">
+                            ${postActionIcon('reply')}<span>Quote</span>
+                        </button>
+                    </div>
+                </div>
+                <button class="feed-action like-action ${p.liked ? 'liked' : ''}" onclick="${stop}toggleLike(${p.id}, this)" aria-label="Like">
+                    <span class="action-icon">${postActionIcon('like')}</span><span>${p.like_count || 0}</span>
                 </button>
-                <button class="feed-action ${p.liked ? 'liked' : ''}" onclick="${stop}toggleLike(${p.id}, this)" aria-label="Like">
-                    <span class="action-icon">${p.liked ? '♥' : '♡'}</span><span>${p.like_count || 0}</span>
-                </button>
-                <span class="feed-action view-only" aria-label="${p.view_count || 0} views"><span class="action-icon">▥</span><span>${p.view_count || 0}</span></span>
-                <button class="feed-action ${p.bookmarked ? 'bookmarked' : ''}" onclick="${stop}toggleBookmark(${p.id}, this)" aria-label="Bookmark"><span class="action-icon">${p.bookmarked ? '▰' : '▱'}</span></button>
-                <button class="feed-action" onclick="${stop}sharePost(${p.id})" aria-label="Share"><span class="action-icon">↗</span></button>
-                <button class="feed-action quote-action" onclick="${stop}quotePost(${p.id})" aria-label="Quote">Quote</button>
+                <span class="feed-action view-action view-only" aria-label="${p.view_count || 0} views"><span class="action-icon">${postActionIcon('views')}</span><span>${p.view_count || 0}</span></span>
+                <button class="feed-action bookmark-action ${p.bookmarked ? 'bookmarked' : ''}" onclick="${stop}toggleBookmark(${p.id}, this)" aria-label="Bookmark"><span class="action-icon">${postActionIcon('bookmark')}</span></button>
+                <button class="feed-action share-action" onclick="${stop}sharePost(${p.id})" aria-label="Share"><span class="action-icon">${postActionIcon('share')}</span></button>
             </div>
         </article>`;
 }
@@ -1179,7 +1221,6 @@ async function toggleLike(postId, btn) {
         });
         const data = await resp.json();
         btn.classList.toggle('liked', data.liked);
-        btn.querySelector('.action-icon').textContent = data.liked ? '♥' : '♡';
         const count = btn.querySelectorAll('span')[1];
         const current = parseInt(count.textContent) || 0;
         count.textContent = data.liked ? current + 1 : Math.max(0, current - 1);
@@ -1269,7 +1310,6 @@ async function toggleBookmark(postId, btn) {
     const data = await resp.json();
     if (!resp.ok) return alert(data.detail || 'Unable to update bookmark');
     btn.classList.toggle('bookmarked', data.bookmarked);
-    btn.querySelector('.action-icon').textContent = data.bookmarked ? '▰' : '▱';
 }
 
 function openPostDetail(postId) {
@@ -1337,7 +1377,7 @@ function renderOverview() {
             <div class="hero-copy">
                 <span class="eyebrow">✣ OPS AGENT FOR MEME COMMUNITIES</span>
                 <h1>Turn meme<br>signals into an<br><em>operating plan.</em></h1>
-                <p><strong>meme_ops</strong> finds narrative opportunities, makes uncertainty clear, and turns evidence into a seven-day community action plan.</p>
+                <p><strong>MEMEBOOM</strong> finds narrative opportunities, makes uncertainty clear, and turns evidence into a seven-day community action plan.</p>
             </div>
             <div class="overview-actions">
                 ${state.token
@@ -2642,7 +2682,7 @@ async function connectSocialTelegram() {
         overlay.innerHTML = `
             <div class="quote-dialog social-login-dialog">
                 <div class="quote-header">
-                    <div><strong>Connect Telegram</strong><p>Telegram verifies your identity; no Telegram password is shared with meme_ops.</p></div>
+                    <div><strong>Connect Telegram</strong><p>Telegram verifies your identity; no Telegram password is shared with MEMEBOOM.</p></div>
                     <button onclick="document.getElementById('telegramLoginOverlay').remove()">×</button>
                 </div>
                 <div id="telegramWidgetMount"></div>
@@ -2689,8 +2729,8 @@ async function renderTelegramGuidePage() {
                 ${socialProviderLogo('telegram')}
                 <div>
                     <span class="eyebrow">BEGINNER GUIDE</span>
-                    <h1>Connect Telegram to meme_ops</h1>
-                    <p>Telegram authorization, meme_ops identity binding, and community data access are three separate steps. Complete all three before Telegram metrics can appear in a report.</p>
+                    <h1>Connect Telegram to MEMEBOOM</h1>
+                    <p>Telegram authorization, MEMEBOOM identity binding, and community data access are three separate steps. Complete all three before Telegram metrics can appear in a report.</p>
                 </div>
             </header>
 
@@ -2704,7 +2744,7 @@ async function renderTelegramGuidePage() {
             <section class="telegram-access-model">
                 <header>
                     <span class="eyebrow">CHOOSE THE RIGHT DATA MODE</span>
-                    <h2>What Telegram data can meme_ops collect?</h2>
+                    <h2>What Telegram data can MEMEBOOM collect?</h2>
                     <p>Telegram identity login does not grant access to arbitrary communities. The current release uses an operator-authorized Bot connection.</p>
                 </header>
                 <div class="telegram-access-grid">
@@ -2712,7 +2752,7 @@ async function renderTelegramGuidePage() {
                         <strong>Supported now</strong>
                         <ul>
                             <li>A group or supergroup that you administer.</li>
-                            <li>The meme_ops Bot is present in that community.</li>
+                            <li>The MEMEBOOM Bot is present in that community.</li>
                             <li>You send the one-time <code>/connect CODE</code> command inside the target group.</li>
                             <li>New member-count and aggregate activity signals after binding.</li>
                         </ul>
@@ -2741,9 +2781,9 @@ async function renderTelegramGuidePage() {
                     <div>
                         <span class="step-owner">PROJECT ADMIN · ONE TIME</span>
                         <h2>Prepare the project Bot</h2>
-                        <p class="step-intro"><strong>Project administrator action.</strong> Regular users never paste a Bot Token into meme_ops.</p>
+                        <p class="step-intro"><strong>Project administrator action.</strong> Regular users never paste a Bot Token into MEMEBOOM.</p>
                         <ol>
-                            <li>Open <strong>@BotFather</strong>, choose the same Bot used by meme_ops, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
+                            <li>Open <strong>@BotFather</strong>, choose the same Bot used by MEMEBOOM, then set its Domain to <code>${escapeHtml(window.location.hostname)}</code>.</li>
                             <li>In @BotFather use <code>/setprivacy</code> and select <strong>Disable</strong> for this Bot if you want aggregate group activity metrics. Otherwise Telegram only sends commands and mentions to the Bot.</li>
                             <li>In this Railway service, add <code>TELEGRAM_BOT_USERNAME</code>, the matching <code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_WEBHOOK_SECRET</code>, and <code>APP_PUBLIC_URL=${escapeHtml(window.location.origin)}</code>.</li>
                             <li>Redeploy the service. Sealed Railway values are supported: the application receives the value at runtime while the dashboard hides it.</li>
@@ -2759,10 +2799,10 @@ async function renderTelegramGuidePage() {
                         <span class="step-owner">EVERY USER</span>
                         <h2>Bind your Telegram identity</h2>
                         <ol>
-                            <li>Connect your wallet in meme_ops. Social connections are private to that wallet.</li>
+                            <li>Connect your wallet in MEMEBOOM. Social connections are private to that wallet.</li>
                             <li>Open <strong>Home → Edit profile → Social data connections</strong> and select <strong>Connect Telegram</strong>.</li>
                             <li>Approve the official Telegram Widget. The message “You have successfully logged in to use Telegram Widgets” only means Telegram approved the login.</li>
-                            <li>Return to meme_ops and confirm that the Telegram icon is colored and the card says <strong>Connected as @username</strong>. Only then is meme_ops identity binding complete.</li>
+                            <li>Return to MEMEBOOM and confirm that the Telegram icon is colored and the card says <strong>Connected as @username</strong>. Only then is MEMEBOOM identity binding complete.</li>
                         </ol>
                     </div>
                 </article>
@@ -2774,8 +2814,8 @@ async function renderTelegramGuidePage() {
                         <h2>Connect an administered group for metrics</h2>
                         <ol>
                             <li>Choose a Telegram group or supergroup that your connected Telegram account administers. Do not use Bot private chat, Saved Messages, BotFather, or another project's group.</li>
-                            <li>Add the configured meme_ops Bot to that group. Give it only the permissions needed to read activity and verify administrators.</li>
-                            <li>In meme_ops select <strong>Bind group</strong> to create a code valid for 15 minutes.</li>
+                            <li>Add the configured MEMEBOOM Bot to that group. Give it only the permissions needed to read activity and verify administrators.</li>
+                            <li>In MEMEBOOM select <strong>Bind group</strong> to create a code valid for 15 minutes.</li>
                             <li>From the same personal Telegram account connected to your wallet, send <code>/connect YOUR_CODE</code> inside the target group—not in a private chat with the Bot.</li>
                             <li>Wait for the Bot confirmation. Member counts and new aggregate activity after binding can then be used as evidence in later reports. Historical Telegram messages are not backfilled.</li>
                         </ol>
@@ -2784,7 +2824,7 @@ async function renderTelegramGuidePage() {
             </div>
 
             <article class="telegram-troubleshooting">
-                <h2>If Telegram says success but meme_ops says “signature invalid or expired”</h2>
+                <h2>If Telegram says success but MEMEBOOM says “signature invalid or expired”</h2>
                 <ul>
                     <li>Do not reuse an old Telegram authorization tab. Close it and start <strong>Connect Telegram</strong> again.</li>
                     <li>Ask the project administrator to confirm that Railway currently detects both Bot Username and Bot Token. A Telegram success screen cannot replace the server-side Token.</li>
